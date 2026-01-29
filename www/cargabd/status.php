@@ -1,7 +1,6 @@
 <?php
 /**
  * CNPJ Control Center - Dashboard Unificado
- * Monitoramento, Histórico e Ações
  */
 
 require_once __DIR__ . '/config.php';
@@ -12,11 +11,34 @@ $pdo = new PDO("mysql:host=".getenv('DB_HOST').";port=".getenv('DB_PORT'), geten
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $pdo->exec("USE `".getenv('DB_NAME')."`");
 
-// 1. Get Current Status (Most Recent)
-$latest = $pdo->query("SELECT * FROM monitoramento_rfb ORDER BY data_detectada DESC LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+// 1. Force Start Handler
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'force_start') {
+    try {
+        $folder = $_POST['folder'];
+        // 1. Atualiza Status
+        $pdo->prepare("UPDATE monitoramento_rfb SET status = 'FORCE_START', log = 'Início forçado pelo Dashboard' WHERE pasta_rfb = ?")->execute([$folder]);
+        
+        // 2. Dispara Processo em Background (Linux)
+        // Isso garante que o Apache não trave esperando o script terminar
+        $cmd = "nohup php /var/www/html/cargabd/automacao.php > /dev/null 2>&1 &";
+        exec($cmd);
+        
+        $msgSuccess = "Comando disparado! O robô iniciou a execução em background.";
+    } catch (Exception $e) {
+        $msgClass = "error";
+        $msgText = "Erro ao forçar início: " . $e->getMessage();
+    }
+}
 
-// 2. Get History
-$history = $pdo->query("SELECT * FROM monitoramento_rfb ORDER BY data_detectada DESC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);
+// 2. Load Status
+try {
+    $latest = $pdo->query("SELECT * FROM monitoramento_rfb ORDER BY data_detectada DESC LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+    $history = $pdo->query("SELECT * FROM monitoramento_rfb ORDER BY data_detectada DESC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    if ($e->getCode() == '42S02') { // Table missing
+        $latest = null; $history = [];
+    } else throw $e;
+}
 
 // 3. Live Logs
 $logFile = '/tmp/cnpj_automacao.log';
@@ -32,6 +54,10 @@ if ($latest) {
         case 'PENDING_APPROVAL':
             $systemState = "Aguardando Prazo (3 dias)";
             $stateColor = "orange";
+            break;
+        case 'FORCE_START':
+            $systemState = "Iniciando Force Start...";
+            $stateColor = "blue"; 
             break;
         case 'Processing (Temp)':
         case 'PROCESSING':
@@ -86,6 +112,7 @@ if ($latest) {
         /* Action Button */
         .btn-action { display: inline-block; background: #50fa7b; color: #1a1b1e; padding: 0.8rem 1.5rem; border-radius: 6px; text-decoration: none; font-weight: bold; transition: transform 0.2s; }
         .btn-action:hover { transform: translateY(-2px); filter: brightness(1.1); }
+        .btn-force { background: #ffb86c; color: #444; }
         
         /* Tables */
         .table-container { background: #202024; border-radius: 8px; overflow: hidden; border: 1px solid #323238; }
@@ -96,6 +123,9 @@ if ($latest) {
         
         /* Log Terminal */
         .terminal { background: #0d0d0d; color: #a8a8b3; font-family: 'Consolas', monospace; padding: 1rem; border-radius: 8px; height: 300px; overflow-y: scroll; font-size: 0.85rem; line-height: 1.5; border: 1px solid #323238; }
+        
+        .alert-success { background: #50fa7b; color: #1a1b1e; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; font-weight: bold; }
+        .alert-error { background: #ff5555; color: white; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; font-weight: bold; }
         
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
     </style>
@@ -112,6 +142,9 @@ if ($latest) {
             </div>
         </div>
 
+        <?php if(isset($msgSuccess)): ?> <div class="alert-success">✅ <?= $msgSuccess ?></div> <?php endif; ?>
+        <?php if(isset($msgText) && isset($msgClass) && $msgClass == 'error'): ?> <div class="alert-error">❌ <?= $msgText ?></div> <?php endif; ?>
+
         <!-- Main Status Cards -->
         <div class="grid">
             <!-- Status Card -->
@@ -121,13 +154,25 @@ if ($latest) {
                     <span class="state-dot dot-<?= $stateColor ?>"></span>
                     <?= $systemState ?>
                 </div>
-                <?php if ($latest && $latest['approve_token'] && $latest['status'] == 'WAITING_VALIDATION'): ?>
+                <?php if ($latest && isset($latest['approval_token']) && $latest['status'] == 'WAITING_VALIDATION'): ?>
                      <div style="margin-top: 1rem;">
-                        <a href="approval_dashboard.php?token=<?= $latest['approve_token'] ?>" class="btn-action">
+                        <a href="approval_dashboard.php?token=<?= $latest['approval_token'] ?>" class="btn-action">
                             🚀 APROVAR DEPLOY AGORA
                         </a>
                      </div>
                 <?php endif; ?>
+                
+                <?php if ($latest && ($latest['status'] == 'PENDING_APPROVAL' || $latest['status'] == 'NEW')): ?>
+                     <div style="margin-top: 1rem;">
+                        <form method="POST" onsubmit="return confirm('Tem certeza? Isso vai pular os 3 dias de espera e começar a carga pesada agora.');">
+                            <input type="hidden" name="folder" value="<?= $latest['pasta_rfb'] ?>">
+                            <button type="submit" name="action" value="force_start" class="btn-action btn-force">
+                                ⚡ FORCE START (Ignorar Prazo)
+                            </button>
+                        </form>
+                     </div>
+                <?php endif; ?>
+
                 <?php if ($latest && $latest['status'] == 'WAITING_VALIDATION'): ?>
                     <p style="color: #a8a8b3; font-size: 0.9rem; margin-top: 10px;">
                         O link também foi enviado para o seu e-mail.
@@ -186,7 +231,7 @@ if ($latest) {
                                 </span>
                             </td>
                             <td><?= date('d/m/y H:i', strtotime($row['data_detectada'])) ?></td>
-                            <td style="color: #a8a8b3;"><?= htmlspecialchars(substr($row['log'], 0, 80)) ?>...</td>
+                            <td style="color: #a8a8b3;"><?= htmlspecialchars(substr($row['log'] ?? '', 0, 80)) ?>...</td>
                         </tr>
                         <?php endforeach; ?>
                     <?php endif; ?>
