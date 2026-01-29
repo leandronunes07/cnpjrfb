@@ -134,6 +134,47 @@
              header("Location: status.php?msg=FilaResetada");
              exit;
         }
+
+        if ($_GET['action'] == 'hard_reset') {
+             // 1. Drop All Tables
+             $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
+             
+             // Disable foreign key checks for safety
+             $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
+             foreach ($tables as $table) {
+                 $pdo->exec("DROP TABLE IF EXISTS `$table`");
+             }
+             $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+             
+             // 2. Delete Files
+             $dirs = [
+                 getenv('EXTRACTED_FILES_PATH') ?: '/var/www/html/cargabd/extracted',
+                 __DIR__ . '/downloads'
+             ];
+             
+             foreach ($dirs as $dir) {
+                 if (is_dir($dir)) {
+                     $files = glob("$dir/*");
+                     foreach ($files as $file) {
+                         if (is_file($file)) unlink($file);
+                     }
+                 }
+                 // Re-create dir if missing
+                 if (!file_exists($dir)) mkdir($dir, 0777, true);
+             }
+
+             // 3. Clear Logs
+             $logDir = __DIR__ . '/logs';
+             if (is_dir($logDir)) {
+                 $logs = glob("$logDir/*"); // Delete EVERYTHING in logs
+                 foreach ($logs as $log) {
+                     if (is_file($log)) unlink($log);
+                 }
+             }
+             
+             header("Location: status.php?msg=SistemaResetadoZero");
+             exit;
+        }
         
         if ($_GET['action'] == 'debug_job' && isset($_GET['id'])) {
              $id = (int)$_GET['id'];
@@ -246,7 +287,8 @@
              <h3 style="margin:0;">💓 Health Check (System Crons)</h3>
              <div>
                 <a href="status.php?action=reset_stuck" class="badge" style="background:#f59e0b; text-decoration:none; margin-right:10px;">🔓 Resetar Travamentos</a>
-                <a href="status.php?action=install_cron" class="badge" style="background:#059669; text-decoration:none;">🛠️ Reparar/Instalar Cron</a>
+                <a href="status.php?action=install_cron" class="badge" style="background:#059669; text-decoration:none; margin-right:10px;">🛠️ Reparar/Instalar Cron</a>
+                <a href="#" onclick="if(confirm('Tem certeza? Isso apaga TODO O BANCO DE DADOS e arquivos baixados!')) window.location='status.php?action=hard_reset';" class="badge" style="background:#ef4444; text-decoration:none;">⛔ HARD RESET</a>
              </div>
         </div>
         

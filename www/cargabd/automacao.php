@@ -360,10 +360,10 @@ class Automacao {
             $this->log("✅ Importação concluída: " . $job['nome_arquivo']);
             
             return true;
+        } catch (Exception $e) {
             $this->handleError($job['id'], $e->getMessage(), 'ERROR');
             return false;
         }
-    }
     }
     
     private function handleError($id, $msg, $status) {
