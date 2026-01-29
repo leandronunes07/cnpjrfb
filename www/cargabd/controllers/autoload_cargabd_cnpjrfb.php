@@ -12,12 +12,20 @@
 if ( !function_exists( 'cargabd_cnpjrfb_autoload') ) {
     function cargabd_cnpjrfb_autoload( $class_name )
     {
-        $path = __DIR__.DS.$class_name.'.class.php';
-        if (file_exists($path)){
-            require_once $path;
-        } else {
-            return false;
+        // Define paths to check
+        $dirs = [
+            __DIR__,                                // controllers (current)
+            __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'helpers', // helpers
+        ];
+
+        foreach ($dirs as $dir) {
+            $path = $dir . DIRECTORY_SEPARATOR . $class_name . '.class.php';
+            if (file_exists($path)){
+                require_once $path;
+                return true;
+            }
         }
+        return false;
     }
     spl_autoload_register('cargabd_cnpjrfb_autoload');
 }

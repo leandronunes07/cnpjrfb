@@ -21,6 +21,7 @@
 /www/cargabd/download/
 !/www/cargabd/extracted/readme.md
 /www/cargabd/extracted/
+/www/cargabd/logs/
 
 #Ignorando arquivos do Banco de dados
 !/mariadb_database/readme.md

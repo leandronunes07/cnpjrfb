@@ -348,7 +348,7 @@ class Automacao {
             // --- IMPORT LOGIC ---
             $dbMain = getenv('DB_NAME');
             
-            require_once __DIR__ . '/controllers/Cargabanco.class.php';
+            require_once __DIR__ . '/controllers/autoload_cargabd_cnpjrfb.php';
             
             // Force micro-batch mode (No Truncate)
             putenv('TRUNCATE_ON_START=false');
