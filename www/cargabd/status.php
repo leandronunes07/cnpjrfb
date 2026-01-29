@@ -19,7 +19,7 @@ $latest = $pdo->query("SELECT * FROM monitoramento_rfb ORDER BY data_detectada D
 $history = $pdo->query("SELECT * FROM monitoramento_rfb ORDER BY data_detectada DESC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);
 
 // 3. Live Logs
-$logFile = '/var/log/cnpj_automacao.log';
+$logFile = '/tmp/cnpj_automacao.log';
 $logs = file_exists($logFile) ? implode("", array_slice(file($logFile), -100)) : "Sem logs disponíveis.";
 
 // Determine System State

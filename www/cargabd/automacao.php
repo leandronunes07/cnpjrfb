@@ -22,10 +22,11 @@ class Automacao {
     private $pdo;
     private $controlTable = 'monitoramento_rfb';
     private $baseUrl = 'https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/';
-    private $logFile = '/var/log/cnpj_automacao.log';
-    private $swapTriggerFile = '/var/www/html/cargabd/APPROVE_SWAP'; // Gatilho manual
+    private $logFile = '/tmp/cnpj_automacao.log'; // Usando /tmp para evitar erro de permissão no Windows Bind Mount
+    private $swapTriggerFile = '/var/www/html/cargabd/APPROVE_SWAP'; 
 
     public function __construct() {
+        // Init DB
         $this->initDatabase();
         $this->ensureControlTableExists();
     }
@@ -34,7 +35,7 @@ class Automacao {
         $timestamp = date('Y-m-d H:i:s');
         $formattedMsg = "[$timestamp] [$type] $msg";
         echo $formattedMsg . PHP_EOL;
-        file_put_contents($this->logFile, $formattedMsg . PHP_EOL, FILE_APPEND);
+        @file_put_contents($this->logFile, $formattedMsg . PHP_EOL, FILE_APPEND);
     }
 
     private function initDatabase() {
@@ -45,11 +46,16 @@ class Automacao {
         $port = getenv('DB_PORT') ?: 3306;
 
         try {
-            // First connect without DB to check/create main DB
-            $this->pdo = new PDO("mysql:host=$host;port=$port", $user, $pass);
-            $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $options = [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true, // Importante para evitar erro 2014
+                PDO::ATTR_PERSISTENT => false
+            ];
+
+            // Connect
+            $this->pdo = new PDO("mysql:host=$host;port=$port", $user, $pass, $options);
             
-            // Garante que o banco principal existe
+            // Create/Use DB
             $this->pdo->exec("CREATE DATABASE IF NOT EXISTS `$dbName` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
             $this->pdo->exec("USE `$dbName`");
 
@@ -240,6 +246,7 @@ class Automacao {
         $stmt = $this->pdo->prepare("SELECT * FROM {$this->controlTable} WHERE pasta_rfb = ?");
         $stmt->execute([$folder]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $stmt->closeCursor(); // Garante liberação de buffer
         return $row ?: ['status' => 'NEW'];
     }
 
