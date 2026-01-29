@@ -55,16 +55,43 @@
     
     // Handle Actions
     if (isset($_GET['action'])) {
+        // Build Env Exports
+        $envVars = "export DB_HOST='".getenv('DB_HOST')."' ".
+                   "DB_PORT='".getenv('DB_PORT')."' ".
+                   "DB_NAME='".getenv('DB_NAME')."' ".
+                   "DB_USER='".getenv('DB_USER')."' ".
+                   "DB_PASSWORD='".getenv('DB_PASSWORD')."';";
+                   
+        $phpBin = 'php'; 
+
+                   
         if ($_GET['action'] == 'swap' && file_exists(__DIR__ . '/APPROVE_SWAP')) {
              // Force SWAP immediate
-             shell_exec("/usr/local/bin/php " . __DIR__ . "/automacao.php --stage=swap > /dev/null 2>&1 &");
+             $cmd = "$envVars $phpBin " . __DIR__ . "/automacao.php --stage=swap > /tmp/cnpj_swap.log 2>&1 &";
+             shell_exec($cmd);
              header("Location: status.php?msg=SwapIniciado");
              exit;
         }
         if ($_GET['manual_start'] == 1) {
-            // Force Discovery
-             shell_exec("/usr/local/bin/php " . __DIR__ . "/automacao.php > /dev/null 2>&1 &");
-             header("Location: status.php?msg=VerificacaoIniciada");
+            // Force Discovery (SYNC DEBUG MODE)
+             $cmd = "$envVars $phpBin " . __DIR__ . "/automacao.php 2>&1";
+             $output = shell_exec($cmd);
+             
+             echo "<pre><h1>DEBUG OUTPUT</h1>";
+             echo "CMD: $cmd\n\n";
+             echo "OUTPUT:\n";
+             var_dump($output);
+             echo "</pre>";
+             
+             // Check if table exists now
+             try {
+                $p = new PDO("mysql:host=".getenv('DB_HOST').";port=".getenv('DB_PORT').";dbname=".getenv('DB_NAME'), getenv('DB_USER'), getenv('DB_PASSWORD'));
+                $p->query("SELECT 1 FROM controle_arquivos LIMIT 1");
+                echo "<h3>✅ Tabela controle_arquivos detectada!</h3>";
+                echo "<a href='status.php'>Voltar para Dashboard</a>";
+             } catch(Exception $e) {
+                 echo "<h3>❌ Tabela ainda não existe.</h3>";
+             }
              exit;
         }
     }

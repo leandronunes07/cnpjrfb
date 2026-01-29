@@ -29,15 +29,18 @@ fi
 # 4. Iniciar o Cron em background
 # 4. Configurar Cron (Pipeline Stage) - Roda a cada minuto para manter Workers ativos
 echo "Setting up pipeline crons..."
+PHP_BIN=$(which php)
+echo "PHP Binary found at: $PHP_BIN"
+
 # Limpa crons anteriores
 crontab -r || true
 
 # Cria arquivo temporário de cron
 cat <<EOF > /tmp/cron_jobs
-* * * * * /usr/local/bin/php /var/www/html/cargabd/automacao.php --stage=download >> /var/log/cron_download.log 2>&1
-* * * * * /usr/local/bin/php /var/www/html/cargabd/automacao.php --stage=extract >> /var/log/cron_extract.log 2>&1
-* * * * * /usr/local/bin/php /var/www/html/cargabd/automacao.php --stage=import >> /var/log/cron_import.log 2>&1
-0 */4 * * * /usr/local/bin/php /var/www/html/cargabd/automacao.php >> /var/log/cron_discovery.log 2>&1
+* * * * * $PHP_BIN /var/www/html/cargabd/automacao.php --stage=download >> /var/log/cron_download.log 2>&1
+* * * * * $PHP_BIN /var/www/html/cargabd/automacao.php --stage=extract >> /var/log/cron_extract.log 2>&1
+* * * * * $PHP_BIN /var/www/html/cargabd/automacao.php --stage=import >> /var/log/cron_import.log 2>&1
+0 */4 * * * $PHP_BIN /var/www/html/cargabd/automacao.php >> /var/log/cron_discovery.log 2>&1
 EOF
 
 # Aplica
