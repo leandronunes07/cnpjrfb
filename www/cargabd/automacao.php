@@ -137,6 +137,7 @@ class Automacao {
 
             $this->log("Iniciando Carga no banco: $dbTemp");
             
+            // Scripts já foram sanitizados pelo entrypoint.sh
             $this->executeShell("cd /var/www/html/cargabd/download && bash download_files.sh");
             $this->executeShell("cd /var/www/html/cargabd/download && bash unzip_files.sh");
             $this->executeShell("php /var/www/html/cargabd/index.php"); 
