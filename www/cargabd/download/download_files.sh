@@ -37,23 +37,36 @@ get_zip_urls() {
     printf "%s\n" "$urls"
 }
 
-download_zips() {
-    local zip_urls
     if ! zip_urls=$(get_zip_urls); then
         return 1
     fi
 
+    # Count total
+    local total_files=$(echo "$zip_urls" | wc -l)
+    local current=0
+
     while IFS= read -r zip_url; do
+        current=$((current + 1))
         local file_name; file_name=$(basename "$zip_url")
 
-        printf "Downloading %s...\n" "$file_name"
-        # Using curl -O (remote name) might be tricky with full path if not in CWD, so we use -o
-        if ! curl -L -k -A "$USER_AGENT" -o "$DEST_DIR/$file_name" "$zip_url"; then
+        echo "⬇️ [$current/$total_files] Baixando $file_name (Aguarde...)"
+        
+        # Wget é mais verboso e amigável para logs (mostra % e tamanho)
+        # --progress=dot:giga imprime um ponto a cada monte de bytes, bom para log não ficar gigante
+        # mas para o dashboard, talvez --progress=bar:force seja melhor se o log capturar stderr
+        
+        if wget -nv --show-progress -O "$DEST_DIR/$file_name" "$zip_url"; then
+             echo "✅ Download de $file_name concluído."
+        else 
              printf "${RED}Error: Failed to download %s${NC}\n" "$file_name" >&2
-             continue
+             # Tenta curl como fallback
+             if curl -L -k -A "$USER_AGENT" -o "$DEST_DIR/$file_name" "$zip_url"; then
+                 echo "✅ Download de $file_name concluído (via Curl)."
+             else
+                 continue
+             fi
         fi
 
-        printf "Downloaded %s successfully.\n" "$file_name"
     done <<< "$zip_urls"
 }
 

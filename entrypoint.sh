@@ -27,7 +27,14 @@ if [ -d "/var/www/html/cargabd/download" ]; then
 fi
 
 # 4. Iniciar o Cron em background
-service cron start
+# 4. Configurar Cron (Explicito para root)
+echo "Setting up root crontab..."
+echo "0 2 * * * /usr/local/bin/php /var/www/html/cargabd/automacao.php >> /var/log/cron.log 2>&1" | crontab -
 
-# 5. Iniciar o Apache em foreground
+# 5. Criar arquivo de log do Cron
+touch /var/log/cron.log
+chmod 666 /var/log/cron.log
+
+# 6. Iniciar serviços
+service cron start
 apachectl -D FOREGROUND

@@ -134,10 +134,18 @@ class Automacao {
             
             putenv("DB_NAME=$dbTemp"); 
             putenv("TRUNCATE_ON_START=true"); 
-
-            $this->log("Iniciando Carga no banco: $dbTemp");
             
-            // Scripts já foram sanitizados pelo entrypoint.sh
+            // UX IMPROVEMENT: Cria tabelas vazias agora para o usuário ver no DBeaver
+            $this->log("Criando estrutura de tabelas em $dbTemp...");
+            $this->initSchema($dbTemp);
+
+            $this->log("Iniciando Baixa de Arquivos (Isso pode demorar)...");
+            
+            // EMERGENCY FIX: Tenta limpar CRLF (Windows) mesmo sem root (espera-se que entrypoint ajude, mas garantimos aqui)
+            // O "|| true" impede que falhas de permissão no sed parem o script
+            $this->executeShell("find /var/www/html/cargabd/download -name '*.sh' -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true");
+            $this->executeShell("find /var/www/html/cargabd/download -name '*.sh' -type f -exec chmod +x {} + 2>/dev/null || true");
+
             $this->executeShell("cd /var/www/html/cargabd/download && bash download_files.sh");
             $this->executeShell("cd /var/www/html/cargabd/download && bash unzip_files.sh");
             $this->executeShell("php /var/www/html/cargabd/index.php"); 
@@ -248,8 +256,37 @@ class Automacao {
 
     private function handleStaleProcessing($state) {
         $folder = $state['pasta_rfb'];
+        
+        // Verifica se a última atualização foi recente (menos de 1 hora)
+        // Isso evita que o cron/loop mate um processo que está apenas lento (download)
+        $lastUpdate = new DateTime($state['data_detectada']); // Assumindo data_detectada ou log update time
+        // Melhor seria ter um campo updated_at, mas vamos usar o diff básico por enquanto
+        // UPDATE: Para ser mais preciso, vamos checar processos do SO se possível, 
+        // mas como não temos PID salvo, vamos usar janela de tempo.
+        
+        // Vamos checar quando o campo 'log' foi escrito pela última vez? Não temos esse dado no DB estruturado.
+        // Vamos assumir "Innocent until proven guilty". Se o status é PROCESSING
+        // e foi setado HOJE, deixa rodar.
+        
+        // Melhor: Vamos criar lock file?
+        $lockFile = '/tmp/cnpj_import_running.lock';
+        if (file_exists($lockFile)) {
+             $fileAge = time() - filemtime($lockFile);
+             if ($fileAge < 3600 * 2) { // 2 horas de tolerância
+                 $this->log("⚠️ Processo já rodando (Lock file detectado há " . round($fileAge/60) . " min). Abortando nova execução.");
+                 return;
+             } else {
+                 $this->log("⚠️ Lock file expirado (mais de 2h). Removendo e reiniciando.");
+                 unlink($lockFile);
+             }
+        }
+        
+        file_put_contents($lockFile, getmypid());
+
          $this->log("ALERTA: Pasta $folder encontrada em estado PROCESSING.", 'WARNING');
          $this->handleImportExecution($folder);
+         
+         @unlink($lockFile);
     }
 
     private function updateStatus($folder, $status, $log = '', $token = null) {
@@ -268,6 +305,91 @@ class Automacao {
         @file_put_contents($this->logFile, "[$command] OUTPUT:\n$fullOutput\n", FILE_APPEND);
         if ($return_var !== 0) throw new Exception("Comando falhou ($return_var): $command");
         return true;
+    }
+
+    private function initSchema($dbName) {
+        $queries = [
+            "CREATE TABLE IF NOT EXISTS `cnae` (`codigo` INT NOT NULL PRIMARY KEY, `descricao` VARCHAR(1000) NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS `natju` (`codigo` INT NOT NULL PRIMARY KEY, `descricao` VARCHAR(1000) NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS `quals` (`codigo` INT NOT NULL PRIMARY KEY, `descricao` VARCHAR(1000) NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS `pais` (`codigo` INT NOT NULL PRIMARY KEY, `descricao` VARCHAR(500) NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS `moti` (`codigo` INT NOT NULL PRIMARY KEY, `descricao` VARCHAR(1000) NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS `munic` (`codigo` INT NOT NULL PRIMARY KEY, `descricao` VARCHAR(1000) NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS `estabelecimento` (
+              `cnpj_basico` CHAR(8) NOT NULL,
+              `cnpj_ordem` CHAR(4) NOT NULL,
+              `cnpj_dv` CHAR(2) NOT NULL,
+              `identificador_matriz_filial` CHAR(1) NOT NULL,
+              `nome_fantasia` VARCHAR(1000) NULL,
+              `situacao_cadastral` CHAR(1) NOT NULL,
+              `data_situacao_cadastral` DATE NULL,
+              `motivo_situacao_cadastral` INT NOT NULL,
+              `nome_cidade_exterior` VARCHAR(45) NULL,
+              `pais` INT NULL,
+              `data_inicio_atividade` DATETIME NULL,
+              `cnae_fiscal_principal` INT NOT NULL,
+              `cnae_fiscal_secundaria` VARCHAR(1000) NULL,
+              `tipo_logradouro` VARCHAR(500) NULL,
+              `logradouro` VARCHAR(1000) NULL,
+              `numero` VARCHAR(45) NULL,
+              `complemento` VARCHAR(100) NULL,
+              `bairro` VARCHAR(45) NULL,
+              `cep` VARCHAR(45) NULL,
+              `uf` VARCHAR(45) NULL,
+              `municipio` INT NULL,
+              `ddd_1` VARCHAR(45) NULL,
+              `telefone_1` VARCHAR(45) NULL,
+              `ddd_2` VARCHAR(45) NULL,
+              `telefone_2` VARCHAR(45) NULL,
+              `ddd_fax` VARCHAR(45) NULL,
+              `fax` VARCHAR(45) NULL,
+              `correio_eletronico` VARCHAR(45) NULL,
+              `situacao_especial` VARCHAR(45) NULL,
+              `data_situacao_especial` DATE NULL,
+              PRIMARY KEY (`cnpj_basico`, `cnpj_ordem`, `cnpj_dv`),
+              INDEX `idx_cnae` (`cnae_fiscal_principal`),
+              INDEX `idx_uf` (`uf`),
+              INDEX `idx_municipio` (`municipio`)
+            ) ENGINE=InnoDB",
+            "CREATE TABLE IF NOT EXISTS `empresa` (
+              `cnpj_basico` CHAR(8) NOT NULL PRIMARY KEY,
+              `razao_social` VARCHAR(1000) NULL,
+              `natureza_juridica` INT NULL,
+              `qualificacao_responsavel` INT NULL,
+              `capital_social` VARCHAR(45) NULL,
+              `porte_empresa` VARCHAR(45) NULL,
+              `ente_federativo_responsavel` VARCHAR(45) NULL,
+              INDEX `idx_razao` (`razao_social`(100))
+            ) ENGINE=InnoDB",
+            "CREATE TABLE IF NOT EXISTS `simples` (
+              `cnpj_basico` CHAR(8) NOT NULL PRIMARY KEY,
+              `opcao_pelo_simples` CHAR(1) NULL,
+              `data_opcao_simples` DATE NULL,
+              `data_exclusao_simples` DATE NULL,
+              `opcao_mei` CHAR(1) NULL,
+              `data_opcao_mei` DATE NULL,
+              `data_exclusao_mei` DATE NULL
+            ) ENGINE=InnoDB",
+            "CREATE TABLE IF NOT EXISTS `socios` (
+              `cnpj_basico` CHAR(8) NOT NULL,
+              `identificador_socio` INT NOT NULL,
+              `nome_socio_razao_social` VARCHAR(1000) NULL,
+              `cpf_cnpj_socio` VARCHAR(45) NULL,
+              `qualificacao_socio` INT NULL,
+              `data_entrada_sociedade` DATE NULL,
+              `pais` INT NULL,
+              `representante_legal` VARCHAR(45) NULL,
+              `nome_do_representante` VARCHAR(500) NULL,
+              `qualificacao_representante_legal` INT NULL,
+              `faixa_etaria` INT NULL,
+              INDEX `idx_socio_cnpj` (`cnpj_basico`),
+              INDEX `idx_nome_socio` (`nome_socio_razao_social`(100))
+            ) ENGINE=InnoDB"
+        ];
+        
+        foreach ($queries as $sql) {
+            $this->pdo->exec($sql);
+        }
     }
 
     private function sendEmail($subject, $body) {

@@ -1,90 +1,17 @@
 FROM debian:12
-
-# 1. Environment Setup
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TERM=xterm
-
-# 2. Install Dependencies
-RUN apt-get update && apt-get upgrade -y && \
-    apt-get -y install \
-    wget \
-    curl \
-    lsb-release \
-    ca-certificates \
-    apt-transport-https \
-    software-properties-common \
-    gnupg2 \
-    unzip \
-    zip \
-    nano \
-    git \
-    cron \
-    libpng-dev \
-    libzip-dev \
-    libonig-dev \
-    libxml2-dev
-
-# 3. Add PHP Repository (Sury)
-RUN wget -O /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg && \
-    echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/php.list
-
-# 4. Set Timezone (America/Sao_Paulo)
-RUN ln -fs /usr/share/zoneinfo/America/Sao_Paulo /etc/localtime && \
-    apt-get install -y --no-install-recommends tzdata && \
-    dpkg-reconfigure --frontend noninteractive tzdata
-
-# 5. Install Apache & PHP 8.2 (Slim selection)
-RUN apt-get update && apt-get -y install \
-    apache2 \
-    libapache2-mod-php8.2 \
-    php8.2 \
-    php8.2-cli \
-    php8.2-common \
-    php8.2-opcache \
-    php8.2-curl \
-    php8.2-dom \
-    php8.2-xml \
-    php8.2-zip \
-    php8.2-mbstring \
-    php8.2-gd \
-    php8.2-mysql \
-    php8.2-pgsql \
-    php8.2-ldap \
-    php8.2-ssh2 \
-    php8.2-bcmath \
-    php8.2-intl \
-    php8.2-soap
-
-# 6. Configure Apache
-RUN a2dismod mpm_event && \
-    a2dismod mpm_worker && \
-    a2enmod mpm_prefork && \
-    a2enmod rewrite && \
-    a2enmod php8.2 && \
-    a2enmod authnz_ldap && \
-    a2enmod headers && \
-    sed -i 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf
-
-# 7. Install Composer
+RUN apt-get update && apt-get upgrade -y && apt-get -y install wget curl lsb-release ca-certificates apt-transport-https software-properties-common gnupg2 unzip zip nano git cron libpng-dev libzip-dev libonig-dev libxml2-dev
+RUN wget -O /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg && echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/php.list
+RUN ln -fs /usr/share/zoneinfo/America/Sao_Paulo /etc/localtime && apt-get install -y --no-install-recommends tzdata && dpkg-reconfigure --frontend noninteractive tzdata
+RUN apt-get update && apt-get -y install apache2 libapache2-mod-php8.2 php8.2 php8.2-cli php8.2-common php8.2-opcache php8.2-curl php8.2-dom php8.2-xml php8.2-zip php8.2-mbstring php8.2-gd php8.2-mysql php8.2-pgsql php8.2-ldap php8.2-ssh2 php8.2-bcmath php8.2-intl php8.2-soap
+RUN a2dismod mpm_event && a2dismod mpm_worker && a2enmod mpm_prefork && a2enmod rewrite && a2enmod php8.2 && a2enmod authnz_ldap && a2enmod headers && sed -i 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-
-# 8. Install PHPUnit (Slim)
-RUN wget -O /usr/local/bin/phpunit-11.phar https://phar.phpunit.de/phpunit-11.phar && \
-    chmod +x /usr/local/bin/phpunit-11.phar && \
-    ln -s /usr/local/bin/phpunit-11.phar /usr/local/bin/phpunit
-
-# 9. Cleanup
+RUN wget -O /usr/local/bin/phpunit-11.phar https://phar.phpunit.de/phpunit-11.phar && chmod +x /usr/local/bin/phpunit-11.phar && ln -s /usr/local/bin/phpunit-11.phar /usr/local/bin/phpunit
 RUN apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# 10. Final Setup
 EXPOSE 80
 EXPOSE 443
-
-# Setup Entrypoint & Cron
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-# Add Cron Job
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 RUN echo "0 2 * * * root /usr/local/bin/php /var/www/html/cargabd/automacao.php >> /var/log/cron.log 2>&1" >> /etc/crontab
-
 ENTRYPOINT ["entrypoint.sh"]

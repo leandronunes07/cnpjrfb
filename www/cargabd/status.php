@@ -85,7 +85,8 @@ if ($latest) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CNPJ Control Center</title>
-    <meta http-equiv="refresh" content="60">
+    <!-- Refresh mais rápido para acompanhar progresso -->
+    <meta http-equiv="refresh" content="10">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; background: #1a1b1e; color: #e1e1e6; margin: 0; padding: 2rem; }
@@ -201,6 +202,98 @@ if ($latest) {
                 </div>
             </div>
         </div>
+        
+        <?php
+            // CHECKLIST & IMPORT COUNTER LOGIC
+            
+            // 1. Determine Current Stage
+            $stage = 0; // 0=Idle, 1=Init, 2=Download, 3=Import, 4=Validation
+            $rowEstimate = 0;
+            
+            if ($latest) {
+                if ($latest['status'] == 'FORCE_START' || strpos($logs, 'Criando estrutura') !== false) $stage = 1;
+                if (strpos($logs, 'Iniciando Baixa') !== false || strpos($logs, 'Baixando') !== false) $stage = 2;
+                // Se detectar unzip ou carga (logs de Carga)
+                if (strpos($logs, 'Carga dos dados') !== false || strpos($logs, 'carregaDadosTabela') !== false) $stage = 3;
+                if ($latest['status'] == 'WAITING_VALIDATION') $stage = 4;
+            }
+
+            // 2. Get Live Row Count (Fast Approximation)
+            if ($stage >= 3) {
+                // Try to guess temp DB name from logs or convention
+                $tempDb = getenv('DB_NAME') . '_temp'; 
+                try {
+                    $stmt = $pdo->query("SELECT SUM(TABLE_ROWS) as total FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$tempDb'");
+                    $rowEstimate = $stmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0;
+                } catch(Exception $e) { /* ignore */ }
+            }
+        ?>
+
+        <!-- CHECKLIST CARD -->
+        <div class="card" style="margin-bottom: 2rem;">
+            <h3>📍 Etapas da Operação</h3>
+            <div style="display: flex; justify-content: space-between; margin-top: 15px; text-align: center;">
+                <div style="opacity: <?= $stage >= 1 ? '1' : '0.3' ?>;">
+                    <div style="font-size: 1.5rem; margin-bottom: 5px;"><?= $stage > 1 ? '✅' : ($stage==1 ? '🔄' : '⚪') ?></div>
+                    <small>Inicialização</small>
+                </div>
+                <div style="opacity: <?= $stage >= 2 ? '1' : '0.3' ?>;">
+                    <div style="font-size: 1.5rem; margin-bottom: 5px;"><?= $stage > 2 ? '✅' : ($stage==2 ? '🔄' : '⚪') ?></div>
+                    <small>Download (RFB)</small>
+                </div>
+                <div style="opacity: <?= $stage >= 3 ? '1' : '0.3' ?>;">
+                    <div style="font-size: 1.5rem; margin-bottom: 5px;"><?= $stage > 3 ? '✅' : ($stage==3 ? '🔄' : '⚪') ?></div>
+                    <small>Importação DB</small>
+                </div>
+                <div style="opacity: <?= $stage >= 4 ? '1' : '0.3' ?>;">
+                    <div style="font-size: 1.5rem; margin-bottom: 5px;"><?= $stage > 4 ? '✅' : ($stage==4 ? '✋' : '⚪') ?></div>
+                    <small>Validação</small>
+                </div>
+            </div>
+            
+            <?php if ($stage == 3): ?>
+                <div style="margin-top: 20px; background: #2a2a2a; padding: 10px; border-radius: 5px; text-align: center;">
+                    <span style="display:block; font-size: 0.8rem; color: #aaa;">REGISTROS IMPORTADOS (ESTIMATIVA)</span>
+                    <strong style="font-size: 1.8rem; color: #50fa7b;"><?= number_format($rowEstimate, 0, ',', '.') ?></strong>
+                    <span style="display:block; font-size: 0.7rem; color: #777;">Atualizado em tempo real via Information Schema</span>
+                </div>
+            <?php endif; ?>
+        </div>
+
+        <?php
+            // Parse Progress from Logs
+            $progress = 0;
+            $currentFile = "Processando...";
+            // Regex simples para pegar % do wget output
+            if (preg_match_all('/(\d+)%/', $logs, $matches)) {
+                 $progress = end($matches[1]);
+            }
+            // Tenta pegar o último arquivo mencionado
+            if (preg_match_all('/Baixando\s+([^\s]+)/', $logs, $matches)) {
+                 $currentFile = end($matches[1]);
+            }
+            
+            // Exibir apenas se parece estar rodando
+            if ($latest['status'] == 'PROCESSING' || $latest['status'] == 'FORCE_START' || strpos($logs, 'Iniciando Baixa') !== false) {
+        ?>
+            <!-- PROGRESS BAR -->
+            <div class="card" style="margin-bottom: 2rem; border: 1px solid #50fa7b;">
+                <h3 style="color: #50fa7b;">📉 Status do Download</h3>
+                <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                    <span>Arquivo: <b><?= htmlspecialchars($currentFile) ?></b></span>
+                    <strong><?= $progress ?>%</strong>
+                </div>
+                <div style="background: #333; height: 24px; border-radius: 12px; overflow: hidden; border: 1px solid #444;">
+                    <div style="
+                        background: linear-gradient(90deg, #50fa7b, #00ff88); 
+                        width: <?= $progress ?>%; 
+                        height: 100%; 
+                        transition: width 0.5s;
+                        box-shadow: 0 0 10px #50fa7b;
+                    "></div>
+                </div>
+            </div>
+        <?php } ?>
 
         <!-- History Table -->
         <h3>📜 Histórico de Versões</h3>
@@ -241,9 +334,14 @@ if ($latest) {
 
         <!-- Terminal Logs -->
         <h3 style="margin-top: 2rem;">💻 Terminal Log (Live Tail)</h3>
-        <div class="terminal">
+        <div class="terminal" id="terminal">
             <pre><?= htmlspecialchars($logs) ?></pre>
         </div>
+        <script>
+            // Auto-scroll logs to bottom
+            const term = document.getElementById('terminal');
+            term.scrollTop = term.scrollHeight;
+        </script>
     </div>
 </body>
 </html>
