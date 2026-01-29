@@ -241,23 +241,50 @@ class Automacao {
         
         try {
             $downloadDir = '/var/www/html/cargabd/download';
-            $extractDir = '/var/www/html/cargabd/extracted';
+            $extractDir = getenv('EXTRACTED_FILES_PATH') ?: '/var/www/html/cargabd/extracted'; // Use ENV
+            
             if (!file_exists($extractDir)) mkdir($extractDir, 0777, true);
             
             $zipPath = $downloadDir . '/' . $job['nome_arquivo'];
             
             if (!file_exists($zipPath)) throw new Exception("ZIP sumiu: $zipPath");
 
+            // 1. Scan directory BEFORE
+            $filesBefore = array_map('basename', glob("$extractDir/*"));
+            
             $cmd = "unzip -o '$zipPath' -d '$extractDir'";
             $this->executeShell($cmd);
             
-            // Remove ZIP immediate to save space
+            // 2. Scan directory AFTER
+            $filesAfter = array_map('basename', glob("$extractDir/*"));
+            $newFiles = array_diff($filesAfter, $filesBefore);
+            $extractedFile = reset($newFiles);
+            
+            $this->log("DEBUG Extractor: NewFiles found: " . print_r($newFiles, true));
+
+            // If no new file found (maybe overwrite?), try to find mostly likely candidate via time?
+            if (!$extractedFile) {
+                // Fallback: Find the most recent file in folder
+                $files = glob("$extractDir/*");
+                usort($files, function($a, $b) { return filemtime($a) < filemtime($b); }); // Newest first
+                $extractedFile = basename($files[0] ?? '');
+                 $this->log("DEBUG Extractor: Fallback found: $extractedFile");
+            }
+            
+            if (!$extractedFile) throw new Exception("Falha ao identificar arquivo extraído de $job[nome_arquivo]");
+            
+            // 3. Rename to Standardized Name (ID_NAME.csv)
+            $standardName = "job_{$job['id']}.csv";
+            $renameResult = rename("$extractDir/$extractedFile", "$extractDir/$standardName");
+            if(!$renameResult) $this->log("DEBUG: Rename Falhou de $extractedFile para $standardName");
+            
+            // Remove ZIP
             unlink($zipPath);
             
             $this->updateQueueStatus($job['id'], 'EXTRACTED');
             return true;
         } catch (Exception $e) {
-             $this->handleError($job['id'], $e->getMessage(), 'RETRY_DOWNLOAD'); // Re-download if zip corrupt
+             $this->handleError($job['id'], $e->getMessage(), 'RETRY_DOWNLOAD'); 
              return false;
         }
     }
@@ -274,33 +301,14 @@ class Automacao {
         $this->log("🚀 Importer: " . $job['nome_arquivo']);
         
         try {
-            $extractDir = '/var/www/html/cargabd/extracted';
-            // Find extracted CSV (match ID or name?)
-            // We deleted ZIP, so we rely on what was inside.
-            // Assumption: unzip output filename matches zip name structure? 
-            // Better: When extracting, we capture output? No PHP unzip?
-            // Robust way: glob() but limit search?
-            // Since we process one by one, the ONLY files in extracted should be ours? 
-            // Wait, Extractor runs in parallel maybe? No, "Backpressure" limit prevents pileup.
-            // But if Extractor ran 3 times, there are 3 csvs. We need to match.
-            // Complex match logic: 
-            // Layout: K3241.K03200Y8.D20911.EMPRECSV.zip -> K3241.K03200Y8.D20911.EMPRECSV
+            $extractDir = getenv('EXTRACTED_FILES_PATH') ?: '/var/www/html/cargabd/extracted';
             
-            $zipName = $job['nome_arquivo']; // X.zip
-            $baseName = preg_replace('/\.zip$/i', '', $zipName);
+            // Look for Standardized Name
+            $targetCsv = "$extractDir/job_{$job['id']}.csv";
             
-            $targetCsv = "$extractDir/$baseName";
-            // Fallback for case sensitivity
-            if (!file_exists($targetCsv)) $targetCsv .= '.csv'; 
-            if (!file_exists($targetCsv)) $targetCsv = "$extractDir/$baseName.CSV";
-            
-            // Critical Fallback: Search similar
             if (!file_exists($targetCsv)) {
-                 $candidates = glob("$extractDir/*" . substr($baseName, -8) . "*"); // Match suffix like EMPRECSV
-                 if ($candidates) $targetCsv = $candidates[0];
+                 throw new Exception("CSV Padronizado não encontrado: $targetCsv");
             }
-
-            if (!file_exists($targetCsv)) throw new Exception("CSV Sumiu: $baseName");
 
             // --- IMPORT LOGIC ---
             $dbMain = getenv('DB_NAME');

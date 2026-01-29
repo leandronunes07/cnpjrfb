@@ -77,10 +77,20 @@
              $cmd = "$envVars $phpBin " . __DIR__ . "/automacao.php 2>&1";
              $output = shell_exec($cmd);
              
-             echo "<pre><h1>DEBUG OUTPUT</h1>";
-             echo "CMD: $cmd\n\n";
-             echo "OUTPUT:\n";
+             echo "<pre><h1>🕵️‍♂️ DEBUG INFO</h1>";
+             
+             echo "<b>1. Teste Manual (automacao.php):</b>\n";
              var_dump($output);
+             
+             echo "\n<b>2. Verificando Crontab (Usuário atual):</b>\n";
+             echo shell_exec("crontab -l 2>&1");
+             
+             echo "\n<b>3. Verificando Processos (Cron rodando?):</b>\n";
+             echo shell_exec("ps aux | grep cron 2>&1");
+             
+             echo "\n<b>4. Listando Logs (/var/log):</b>\n";
+             echo shell_exec("ls -la /var/log/cron* 2>&1");
+             
              echo "</pre>";
              
              // Check if table exists now
@@ -92,6 +102,29 @@
              } catch(Exception $e) {
                  echo "<h3>❌ Tabela ainda não existe.</h3>";
              }
+             exit;
+        }
+        
+        if ($_GET['action'] == 'install_cron') {
+             $logDir = __DIR__ . '/logs';
+             if (!file_exists($logDir)) mkdir($logDir, 0777, true);
+             
+             $cronContent = "* * * * * php " . __DIR__ . "/automacao.php --stage=download >> $logDir/cron_download.log 2>&1\n" .
+                            "* * * * * php " . __DIR__ . "/automacao.php --stage=extract >> $logDir/cron_extract.log 2>&1\n" .
+                            "* * * * * php " . __DIR__ . "/automacao.php --stage=import >> $logDir/cron_import.log 2>&1\n" .
+                            "0 */4 * * * php " . __DIR__ . "/automacao.php >> $logDir/cron_discovery.log 2>&1\n";
+             
+             // Install 
+             $tmp = tempnam(sys_get_temp_dir(), 'cron');
+             file_put_contents($tmp, $cronContent);
+             
+             $cmd = "crontab $tmp 2>&1";
+             $out = shell_exec($cmd);
+             unlink($tmp);
+             
+             if ($out) die("<h1>Erro ao instalar Cron:</h1><pre>$out</pre>");
+             
+             header("Location: status.php?msg=CronInstalado");
              exit;
         }
     }
@@ -141,6 +174,54 @@
         </div>
         <?php exit; ?>
     <?php endif; ?>
+
+    <!-- Cron Heartbeat -->
+    <?php
+        $logDir = __DIR__ . '/logs';
+        if (!file_exists($logDir)) mkdir($logDir, 0777, true);
+        
+        $cronLogs = [
+            'Download' => $logDir . '/cron_download.log',
+            'Extract'  => $logDir . '/cron_extract.log',
+            'Import'   => $logDir . '/cron_import.log'
+        ];
+
+        function getCronStatus($logFile) {
+            if (!file_exists($logFile)) return ['status' => 'MISSING', 'time' => 'N/A', 'diff' => 9999];
+            $time = filemtime($logFile);
+            $diff = time() - $time;
+            
+            // Tolerance logic
+            $status = 'ONLINE';
+            if ($diff > 120) $status = 'STALLED';
+            
+            return ['status' => $status, 'time' => date('H:i:s', $time), 'diff' => $diff];
+        }
+    ?>
+    <div class="card" style="margin-bottom: 20px; padding: 15px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #333; padding-bottom:10px;">
+             <h3 style="margin:0;">💓 Health Check (System Crons)</h3>
+             <a href="status.php?action=install_cron" class="badge" style="background:#059669; text-decoration:none;">🛠️ Reparar/Instalar Cron</a>
+        </div>
+        
+        <div style="display:flex; gap: 20px; flex-wrap:wrap;">
+            <?php foreach($cronLogs as $name => $path): 
+                $st = getCronStatus($path);
+                $color = $st['status'] == 'ONLINE' ? '#22c55e' : ($st['status']=='MISSING' ? '#ef4444' : '#eab308');
+                $icon = $st['status'] == 'ONLINE' ? '✅' : '⚠️';
+            ?>
+            <div style="border: 1px solid #444; padding: 10px; border-radius: 6px; flex: 1; min-width: 150px; background: #1f1f23;">
+                <div style="font-weight:bold; color:#aaa; margin-bottom:5px;"><?= $icon ?> <?= $name ?> Worker</div>
+                <div style="font-size: 1.2rem; color: <?= $color ?>"><?= $st['status'] ?></div>
+                <div style="font-size: 0.8rem; color:#666;">Log: relative/logs/<?= basename($path) ?></div>
+                <div style="font-size: 0.7rem; color:#555;"><?= $st['diff'] ?>s atrás</div>
+            </div>
+            <?php endforeach; ?>
+        </div>
+        <div style="margin-top:10px; font-size:0.8em; color:#666;">
+            * Se estiver MISSING, clique em "Reparar/Instalar Cron".
+        </div>
+    </div>
 
     <!-- KPI Cards -->
     <div class="grid" style="margin-bottom: 30px;">
