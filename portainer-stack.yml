@@ -19,6 +19,15 @@ services:
       - DB_USER=root
       - DB_PASSWORD=dab3cdfdde734471840f5179d1299d37
       - EXTRACTED_FILES_PATH=/var/www/html/cargabd/extracted
+      - DELETE_AFTER_IMPORT=true
+      - BLUE_GREEN_DEPLOY=true # Ativa criação de banco temporário e validação
+      # Configuração de E-mail
+      - ADMIN_EMAIL=leandro@agenciataruga.com # Para onde vão os alertas
+      - SMTP_HOST=mail.tarugahost.com
+      - SMTP_PORT=465
+      - SMTP_USER=cnpjrfb@tarugahost.com
+      - SMTP_PASS=bGB1W6BPoyUoJpz8BS
+      - SMTP_SECURE=ssl
     volumes:
       - /root/cnpj/php.ini:/etc/php/8.2/apache2/php.ini:ro
       - /root/cnpj/php-custom.ini:/etc/php/8.2/cli/conf.d/99-custom.ini:ro
@@ -31,6 +40,10 @@ services:
     deploy:
       mode: replicated
       replicas: 1
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
       labels:
         - traefik.enable=true
         - traefik.http.routers.cnpj_app.rule=Host(`cnpjrfb.agenciataruga.com`)

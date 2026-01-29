@@ -48,7 +48,9 @@ O Portainer (versão Web) não consegue "criar" o sistema do zero apenas lendo o
     *   **Build method:** Escolha a opção **Web editor** (ícone de lápis).
 5.  Na caixa de texto grande (Web editor), **apague tudo** e cole o conteúdo EXATO do arquivo `portainer-stack.yml` que está no seu projeto.
     *(Já configurei ele com o domínio `cnpjrfb.agenciataruga.com` e a conexão com seu banco Orion).*
-6.  Role a tela para baixo e clique no botão azul **Deploy the stack**.
+6.  **Configuração de E-mail**:
+    Já deixei preenchido com os dados da Taruga Host. Apenas confirme se o campo `ADMIN_EMAIL` está correto (para onde vão os alertas).
+7.  Role a tela para baixo e clique no botão azul **Deploy the stack**.
 
 ---
 
@@ -57,6 +59,17 @@ O Portainer (versão Web) não consegue "criar" o sistema do zero apenas lendo o
 1.  Espere uns segundos. Se a página recarregar e mostrar a stack `cnpj_stack` na lista, parabéns!
 2.  Tente acessar no navegador: **https://cnpjrfb.agenciataruga.com**
     *(Pode demorar uns minutinhos para o Traefik gerar o certificado de segurança).*
+
+---
+
+## 🔗 Links Úteis e Monitoramento
+
+Aqui estão os endereços vitais para você salvar nos favoritos:
+
+| Sistema | URL | Para que serve? |
+| :--- | :--- | :--- |
+| **Site Principal** | `https://cnpjrfb.agenciataruga.com` | API e funcionamento público. |
+| **Painel de Controle** | `https://cnpjrfb.agenciataruga.com/cargabd/status.php` | **(IMPORTANTE)** Ver logs, status e aprovar deploys. |
 
 ---
 
@@ -84,5 +97,9 @@ Agora que o site está no ar, precisamos preencher o banco de dados.
     ```bash
     php /var/www/html/cargabd/index.php
     ```
+
+    ```
+    
+    *Nota: Nas próximas vezes, você não precisará fazer isso. O sistema de automação (robô) fará tudo sozinho!*
 
 **Pronto! Seu sistema está 100% operacional.** 🚀

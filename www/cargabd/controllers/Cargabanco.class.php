@@ -40,10 +40,20 @@ class Cargabanco
         try{
             $this->quebraLinha();
             $this->quebraLinha();
-            echo 'Esse procedimento vai apagar todo o banco e carregar com os dados dos arquivos CSV';
             $this->quebraLinha();
-            $this->quebraLinha();
-            $this->truncateDados();
+            
+            // Verifica se deve limpar o banco antes de começar
+            $shouldTruncate = getenv('TRUNCATE_ON_START') !== 'false';
+            
+            if ($shouldTruncate) {
+                echo '⚠️ ATENÇÃO: TRUNCATE_ON_START=true. Apagando dados antigos...';
+                $this->quebraLinha();
+                $this->truncateDados();
+            } else {
+                echo 'ℹ️ MODO RESUME: TRUNCATE_ON_START=false. Mantendo dados existentes e continuando importação...';
+                $this->quebraLinha();
+            }
+            
             $this->carregaDados();
         }
         catch (Exception $e) {
@@ -122,17 +132,34 @@ class Cargabanco
      */
     public function carregaDadosTabela(Dao $classDao, string $arquivoCsv){
         $time_start = microtime(true);
-        $arquivoCsv = $this->pathExtractedFiles.DS.$arquivoCsv;
-        if (!file_exists($arquivoCsv)){
-            throw new InvalidArgumentException('ERRO: o arquivo '.$arquivoCsv.' não encontrado');
+        $fullPath = $this->pathExtractedFiles.DS.$arquivoCsv;
+        
+        if (!file_exists($fullPath)){
+            throw new InvalidArgumentException('ERRO: o arquivo '.$fullPath.' não encontrado');
         }
-        $uploadCsv = new UploadCsv($classDao,$arquivoCsv);
+        
+        $uploadCsv = new UploadCsv($classDao,$fullPath);
         $numRegistros = $uploadCsv->executar();
+        
         $time_end = microtime(true);
-        $time = $time_end - $time_start; //calculate the difference between start and stop
+        $time = $time_end - $time_start; 
         $time = number_format($time, 3, ',', '.');
+        
         echo $time.' segundos para a carga na tabela: '.$classDao->getTabelaName().' quantidade de registros: '.$numRegistros;
         $this->quebraLinha();
+        
+        // Deletar arquivo se configurado (padrão TRUE se não definido)
+        $shouldDelete = getenv('DELETE_AFTER_IMPORT') !== 'false';
+        if ($shouldDelete) {
+            if (unlink($fullPath)) {
+                echo "🗑️ Arquivo deletado para liberar espaço: " . basename($fullPath);
+                $this->quebraLinha();
+            } else {
+                echo "⚠️ Falha ao deletar arquivo: " . basename($fullPath);
+                $this->quebraLinha();
+            }
+        }
+        
         return $numRegistros;
     }
 

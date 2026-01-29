@@ -82,9 +82,19 @@ RUN wget -O /usr/local/bin/phpunit-11.phar https://phar.phpunit.de/phpunit-11.ph
 # 8. Cleanup
 RUN apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 9. Setup
+# 9. Setup Cron and Automation
+RUN apt-get update && apt-get install -y cron
+
+# Copiar script de automação (placeholder) e entrypoint
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Configurar Crontab (Roda todo dia às 02:00 AM)
+RUN echo "0 2 * * * root /usr/local/bin/php /var/www/html/cargabd/automacao.php >> /var/log/cron.log 2>&1" >> /etc/crontab
+
+# 10. Final Setup
 RUN updatedb
 EXPOSE 80
 EXPOSE 443
 
-CMD ["apachectl", "-D", "FOREGROUND"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
