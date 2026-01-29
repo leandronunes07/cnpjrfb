@@ -13,13 +13,20 @@ services:
       - "9003:9003"
     environment:
       - TIMEZONE=America/Sao_Paulo
+      - DB_HOST=my_mysql8
+      - DB_PORT=3306
+      - DB_NAME=cnpjrfb_2026
+      - DB_USER=root
+      - DB_PASSWORD=123456
+      - EXTRACTED_FILES_PATH=/var/www/html/cargabd/extracted
     volumes:
       - ./php.ini:/etc/php/8.2/apache2/php.ini:ro
-      - ./php-custom.ini:/etc/php/8.2/cli/conf.d/99-custom.ini:ro
+      - ./php-custom.ini:/etc/php/8.2/cli/conf.d/99-custom.ini
       - ./php-custom.ini:/etc/php/8.2/apache2/conf.d/99-custom.ini:ro
-      - ./www:/var/www/html:rw
+      - ./www:/var/www/html
       - ./log_apache:/var/log/apache2:rw
       - ./extracted_files:/var/opt/dados_receita/extracted_files:rw
+      - ./www/cargabd/extracted:/var/www/html/cargabd/extracted # Bind local folder for test
     networks:
       - TarugaNetwork
 

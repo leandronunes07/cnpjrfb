@@ -14,11 +14,11 @@
 //Veja como configurar conforme o Banco de Dados
 //https://www.adianti.com.br/framework-quickstart
 return [
-     "host" => "my_mysql8"
-    ,"port" => "3306"
-    ,"name" => "cnpjrfb_2026"
-    ,"user" => "root"
-    ,"pass" => "123456" // ATENÇÃO: Verifique a senha
+     "host" => getenv('DB_HOST') ?: "localhost"
+    ,"port" => getenv('DB_PORT') ?: "3306"
+    ,"name" => getenv('DB_NAME') ?: "cnpjrfb_2026"
+    ,"user" => getenv('DB_USER') ?: "root"
+    ,"pass" => getenv('DB_PASSWORD') ?: "123456"
     ,"type" => "mysql"
     ,"prep" => "1"
     ,"slog" => "SystemSqlLogService"

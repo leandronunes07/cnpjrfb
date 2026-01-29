@@ -3,7 +3,7 @@ version: '3.8'
 services:
   app:
     build:
-      dockerfile: adianti_debian12_php8.2.Dockerfile
+      dockerfile: Dockerfile.slim
       context: .
     image: cnpj-app:latest
     container_name: cnpj_app
@@ -13,60 +13,36 @@ services:
       - "9003:9003"
     environment:
       - TIMEZONE=America/Sao_Paulo
+      - DB_HOST=mysql # Nome do serviço no stack Orion (ou nome_da_stack_mysql)
+      - DB_PORT=3306
+      - DB_NAME=cnpjrfb_2026
+      - DB_USER=root
+      - DB_PASSWORD=dab3cdfdde734471840f5179d1299d37
+      - EXTRACTED_FILES_PATH=/var/www/html/cargabd/extracted
     volumes:
-      - ./php.ini:/etc/php/8.2/apache2/php.ini:ro
-      - ./php-custom.ini:/etc/php/8.2/cli/conf.d/99-custom.ini:ro
-      - ./php-custom.ini:/etc/php/8.2/apache2/conf.d/99-custom.ini:ro
-      - ./www:/var/www/html:rw
-      - ./log_apache:/var/log/apache2:rw
-      - ./extracted_files:/var/opt/dados_receita/extracted_files:rw # Shared volume for downloaded CSVs
+      - /root/cnpj/php.ini:/etc/php/8.2/apache2/php.ini:ro
+      - /root/cnpj/php-custom.ini:/etc/php/8.2/cli/conf.d/99-custom.ini:ro
+      - /root/cnpj/php-custom.ini:/etc/php/8.2/apache2/conf.d/99-custom.ini:ro
+      - /root/cnpj/www:/var/www/html:rw
+      - /root/cnpj/log_apache:/var/log/apache2:rw
+      - extracted_files:/var/www/html/cargabd/extracted # Volume nomeado para persistência
     networks:
-      - cnpj_net
-
-  db:
-    image: mariadb:10.11
-    container_name: cnpj_db
-    restart: unless-stopped
-    command: --max_allowed_packet=512M --innodb_buffer_pool_size=1G --innodb_log_file_size=256M --innodb_flush_log_at_trx_commit=2
-    environment:
-      MYSQL_ROOT_PASSWORD: root_password_changeme
-      MYSQL_DATABASE: cnpj_db
-      MYSQL_USER: cnpj_user
-      MYSQL_PASSWORD: cnpj_password
-    volumes:
-      - mariadb_data:/var/lib/mysql
-      - ./mariadb_logs:/var/log/mysql
-      - ./extracted_files:/var/opt/dados_receita/extracted_files:ro # Read-only access to CSVs for LOAD DATA INFILE if needed
-    networks:
-      - cnpj_net
-    ports:
-      - "3306:3306"
-
-  adminer:
-    image: adminer
-    container_name: cnpj_adminer
-    restart: always
-    networks:
-      - cnpj_net
-    ports:
-      - "8082:8080"
-
-  phpmyadmin:
-    image: phpmyadmin
-    container_name: cnpj_phpmyadmin
-    restart: always
-    environment:
-      PMA_HOST: db
-      PMA_ARBITRARY: 1
-      UPLOAD_LIMIT: 100M
-    ports:
-      - "8083:80"
-    networks:
-      - cnpj_net
+      - TaruZapNet
+    deploy:
+      mode: replicated
+      replicas: 1
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.cnpj_app.rule=Host(`cnpjrfb.agenciataruga.com`)
+        - traefik.http.routers.cnpj_app.entrypoints=websecure
+        - traefik.http.routers.cnpj_app.tls.certresolver=letsencryptresolver
+        - traefik.http.services.cnpj_app.loadbalancer.server.port=80
+        - traefik.http.services.cnpj_app.loadbalancer.passHostHeader=true
 
 networks:
-  cnpj_net:
-    driver: bridge
+  TaruZapNet:
+    external: true
+    name: TaruZapNet
 
 volumes:
-  mariadb_data:
+  extracted_files:
