@@ -127,6 +127,49 @@
              header("Location: status.php?msg=CronInstalado");
              exit;
         }
+        
+        if ($_GET['action'] == 'reset_stuck') {
+             $pdo->exec("UPDATE controle_arquivos SET status='EXTRACTED' WHERE status='IMPORTING'");
+             $pdo->exec("UPDATE controle_arquivos SET status='DOWNLOADED' WHERE status='EXTRACTING'");
+             header("Location: status.php?msg=FilaResetada");
+             exit;
+        }
+        
+        if ($_GET['action'] == 'debug_job' && isset($_GET['id'])) {
+             $id = (int)$_GET['id'];
+             echo "<pre><h1>🐞 Debug Job #$id</h1>";
+             
+             // Manually load Automation class logic (simplified)
+             $stmt = $pdo->prepare("SELECT * FROM controle_arquivos WHERE id = ?");
+             $stmt->execute([$id]);
+             $job = $stmt->fetch(PDO::FETCH_ASSOC);
+             
+             if (!$job) die("Job não encontrado");
+             
+             echo "Job Data: " . print_r($job, true) . "\n";
+             
+             // Check ENV
+             echo "EXTRACTED_FILES_PATH: " . (getenv('EXTRACTED_FILES_PATH') ?: 'N/A') . "\n";
+             
+             // Check File
+             $extractDir = getenv('EXTRACTED_FILES_PATH') ?: '/var/www/html/cargabd/extracted';
+             $targetCsv = "$extractDir/job_{$id}.csv";
+             
+             echo "Target CSV: $targetCsv\n";
+             if (file_exists($targetCsv)) {
+                 echo "✅ Arquivo EXISTE! Tamanho: " . filesize($targetCsv) . " bytes\n";
+                 echo "Permissões: " . substr(sprintf('%o', fileperms($targetCsv)), -4) . "\n";
+             } else {
+                 echo "❌ Arquivo NÃO ENCONTRADO.\n";
+                 // List dir
+                 echo "Conteúdo da pasta $extractDir:\n";
+                 print_r(scandir($extractDir));
+             }
+             
+             echo "\n\nPara executar a importação real, o script precisa rodar em CLI (Background).";
+             echo "</pre>";
+             exit;
+        }
     }
     // Stats
     $qStats = [];
@@ -201,7 +244,10 @@
     <div class="card" style="margin-bottom: 20px; padding: 15px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #333; padding-bottom:10px;">
              <h3 style="margin:0;">💓 Health Check (System Crons)</h3>
-             <a href="status.php?action=install_cron" class="badge" style="background:#059669; text-decoration:none;">🛠️ Reparar/Instalar Cron</a>
+             <div>
+                <a href="status.php?action=reset_stuck" class="badge" style="background:#f59e0b; text-decoration:none; margin-right:10px;">🔓 Resetar Travamentos</a>
+                <a href="status.php?action=install_cron" class="badge" style="background:#059669; text-decoration:none;">🛠️ Reparar/Instalar Cron</a>
+             </div>
         </div>
         
         <div style="display:flex; gap: 20px; flex-wrap:wrap;">

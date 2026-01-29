@@ -2,6 +2,8 @@
 /**
  * Script de Automação e Orquestração (Cron Job) - Versão Blue-Green (FINAL + UTF8 + ForceStart)
  */
+error_reporting(E_ALL & ~E_DEPRECATED);
+ini_set('memory_limit', '2048M');
 
 define('DS', DIRECTORY_SEPARATOR);
 define('ROOT_PATH', __DIR__);
@@ -310,38 +312,58 @@ class Automacao {
                  throw new Exception("CSV Padronizado não encontrado: $targetCsv");
             }
 
+            // --- FIX IMPORT MAPPING ---
+            // CargaDadosCNPJ uses glob() searching for specific substrings (e.g. 'SOCIOCSV').
+            // Since we renamed to job_ID.csv, it won't find it.
+            // Solution: Rename job_ID.csv to job_ID.SUFFIX temporarily.
+            
+            $map = [
+                'Socios'          => 'SOCIOCSV',
+                'Empresas'        => 'EMPRECSV',
+                'Estabelecimentos'=> 'ESTABELE',
+                'Simples'         => 'SIMPLES',
+                'Cnaes'           => 'CNAECSV',
+                'Motivos'         => 'MOTICSV',
+                'Municipios'      => 'MUNICCSV',
+                'Naturezas'       => 'NATJUCSV',
+                'Paises'          => 'PAISCSV',
+                'Qualificacoes'   => 'QUALSCSV'
+            ];
+            
+            $suffix = '';
+            foreach ($map as $key => $val) {
+                if (stripos($job['nome_arquivo'], $key) !== false) {
+                    $suffix = $val;
+                    break;
+                }
+            }
+            
+            if (!$suffix) throw new Exception("Não foi possível determinar o tipo do arquivo: " . $job['nome_arquivo']);
+            
+            $finalName = "$extractDir/job_{$job['id']}.{$suffix}";
+            rename($targetCsv, $finalName);
+            
+            $this->log("ℹ️ Arquivo renomeado para compatibilidade: " . basename($finalName));
+
             // --- IMPORT LOGIC ---
             $dbMain = getenv('DB_NAME');
-            $dbTemp = $dbMain . '_temp';
-            putenv("DB_NAME=$dbTemp");
             
-            require_once __DIR__ . '/index.php'; // Load autoloader context
-            $carga = new Cargabanco();
+            require_once __DIR__ . '/controllers/Cargabanco.class.php';
             
-             // Mapeamento DAO
-            $daoMap = [
-                'EMPRESA' => 'EmpresaDAO', 'ESTABELECIMENTO' => 'EstabelecimentoDAO', 'SOCIO' => 'SociosDAO',
-                'SIMPLES' => 'SimplesDAO', 'CNAE' => 'CnaeDAO', 'MOTIVO' => 'MotiDAO',
-                'MUNICIPIO' => 'MunicDAO', 'NATUREZA' => 'NatjuDAO', 'PAIS' => 'PaisDAO', 'QUALIFICACAO' => 'QualsDAO'
-            ];
-            $daoClass = $daoMap[$job['tipo']] ?? null;
-            if (!$daoClass) throw new Exception("DAO desconhecido para " . $job['tipo']);
-
-            $tpdo = New TPDOConnection(); $tpdo::connect();
-            $daoInstance = new $daoClass($tpdo);
+            // Force micro-batch mode (No Truncate)
+            putenv('TRUNCATE_ON_START=false');
             
-            $carga->carregaDadosTabela($daoInstance, basename($targetCsv));
-            
-            // Delete CSV
-            unlink($targetCsv);
+            $importer = new Cargabanco();
+            $importer->executar();
             
             $this->updateQueueStatus($job['id'], 'COMPLETED');
+            $this->log("✅ Importação concluída: " . $job['nome_arquivo']);
+            
             return true;
-
-        } catch (Exception $e) {
             $this->handleError($job['id'], $e->getMessage(), 'ERROR');
             return false;
         }
+    }
     }
     
     private function handleError($id, $msg, $status) {
