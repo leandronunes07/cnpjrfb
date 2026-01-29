@@ -49,19 +49,19 @@ get_zip_urls() {
         current=$((current + 1))
         local file_name; file_name=$(basename "$zip_url")
 
-        echo "⬇️ [$current/$total_files] Baixando $file_name (Aguarde...)"
+        echo "⬇️ [$current/$total_files] Baixando $file_name (Resume enabled)..."
         
-        # Wget é mais verboso e amigável para logs (mostra % e tamanho)
-        # --progress=dot:giga imprime um ponto a cada monte de bytes, bom para log não ficar gigante
-        # mas para o dashboard, talvez --progress=bar:force seja melhor se o log capturar stderr
+        # -c : Continue download (Resume)
+        # -nv : Non-verbose (reduz ruido, mas show-progress mantem barra)
+        # --show-progress : Mostra barra visual
         
-        if wget -nv --show-progress -O "$DEST_DIR/$file_name" "$zip_url"; then
-             echo "✅ Download de $file_name concluído."
+        if wget -c -nv --show-progress -O "$DEST_DIR/$file_name" "$zip_url"; then
+             echo "✅ Download de $file_name garantido."
         else 
              printf "${RED}Error: Failed to download %s${NC}\n" "$file_name" >&2
-             # Tenta curl como fallback
-             if curl -L -k -A "$USER_AGENT" -o "$DEST_DIR/$file_name" "$zip_url"; then
-                 echo "✅ Download de $file_name concluído (via Curl)."
+             # Fallback curl com resume (-C -)
+             if curl -C - -L -k -A "$USER_AGENT" -o "$DEST_DIR/$file_name" "$zip_url"; then
+                 echo "✅ Download de $file_name concluído (via Curl Resume)."
              else
                  continue
              fi

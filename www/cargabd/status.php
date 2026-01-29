@@ -1,347 +1,229 @@
-<?php
-/**
- * CNPJ Control Center - Dashboard Unificado
- */
-
-require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/controllers/TPDOConnection.class.php';
-
-// Conexão DB
-$pdo = new PDO("mysql:host=".getenv('DB_HOST').";port=".getenv('DB_PORT'), getenv('DB_USER'), getenv('DB_PASSWORD'));
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-$pdo->exec("USE `".getenv('DB_NAME')."`");
-
-// 1. Force Start Handler
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'force_start') {
-    try {
-        $folder = $_POST['folder'];
-        // 1. Atualiza Status
-        $pdo->prepare("UPDATE monitoramento_rfb SET status = 'FORCE_START', log = 'Início forçado pelo Dashboard' WHERE pasta_rfb = ?")->execute([$folder]);
-        
-        // 2. Dispara Processo em Background (Linux)
-        // Isso garante que o Apache não trave esperando o script terminar
-        $cmd = "nohup php /var/www/html/cargabd/automacao.php > /dev/null 2>&1 &";
-        exec($cmd);
-        
-        $msgSuccess = "Comando disparado! O robô iniciou a execução em background.";
-    } catch (Exception $e) {
-        $msgClass = "error";
-        $msgText = "Erro ao forçar início: " . $e->getMessage();
-    }
-}
-
-// 2. Load Status
-try {
-    $latest = $pdo->query("SELECT * FROM monitoramento_rfb ORDER BY data_detectada DESC LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-    $history = $pdo->query("SELECT * FROM monitoramento_rfb ORDER BY data_detectada DESC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    if ($e->getCode() == '42S02') { // Table missing
-        $latest = null; $history = [];
-    } else throw $e;
-}
-
-// 3. Live Logs
-$logFile = '/tmp/cnpj_automacao.log';
-$logs = file_exists($logFile) ? implode("", array_slice(file($logFile), -100)) : "Sem logs disponíveis.";
-
-// Determine System State
-$systemState = "Indefinido";
-$stateColor = "gray";
-
-if ($latest) {
-    switch ($latest['status']) {
-        case 'NEW': 
-        case 'PENDING_APPROVAL':
-            $systemState = "Aguardando Prazo (3 dias)";
-            $stateColor = "orange";
-            break;
-        case 'FORCE_START':
-            $systemState = "Iniciando Force Start...";
-            $stateColor = "blue"; 
-            break;
-        case 'Processing (Temp)':
-        case 'PROCESSING':
-            $systemState = "Em Processamento (Carga)";
-            $stateColor = "blue";
-            break;
-        case 'WAITING_VALIDATION':
-            $systemState = "Aguardando Aprovação (Validação)";
-            $stateColor = "yellow";
-            break;
-        case 'COMPLETED':
-            $systemState = "Sistema Operacional (Atualizado)";
-            $stateColor = "green";
-            break;
-        case 'ERROR':
-            $systemState = "ERRO - Atenção Necessária";
-            $stateColor = "red";
-            break;
-    }
-}
-?>
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CNPJ Control Center</title>
-    <!-- Refresh mais rápido para acompanhar progresso -->
+    <title>CNPJ Control Center v2</title>
     <meta http-equiv="refresh" content="10">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Inter', sans-serif; background: #1a1b1e; color: #e1e1e6; margin: 0; padding: 2rem; }
-        .container { max-width: 1200px; margin: 0 auto; }
+        :root { --bg: #111; --card: #1a1b1e; --accent: #3b82f6; --success: #22c55e; --warning: #f59e0b; --danger: #ef4444; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: #e1e1e6; margin: 0; padding: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+        .card { background: var(--card); padding: 20px; border-radius: 12px; border: 1px solid #333; }
+        h1, h2, h3 { margin: 0 0 15px 0; }
+        .metric { font-size: 2rem; font-weight: 800; }
+        .metric span { font-size: 1rem; color: #888; font-weight: 400; }
+        .progress-bar { height: 8px; background: #333; border-radius: 4px; overflow: hidden; margin-top: 10px; }
+        .progress-fill { height: 100%; transition: width 0.3s ease; }
         
-        /* Header Stats */
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
-        .title h1 { margin: 0; font-weight: 800; font-size: 1.8rem; background: linear-gradient(90deg, #8257e5, #50fa7b); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .title span { font-size: 0.9rem; color: #a8a8b3; }
+        /* Tabs */
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+        .tab { background: #222; padding: 10px 20px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+        .tab.active { background: var(--accent); color: white; border-color: var(--accent); }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
         
-        /* Cards Grid */
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
-        .card { background: #202024; border-radius: 8px; padding: 1.5rem; border: 1px solid #323238; }
-        .card h3 { margin-top: 0; color: #a8a8b3; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
-        .big-stat { font-size: 1.5rem; font-weight: bold; margin: 10px 0; display: flex; align-items: center; gap: 10px; }
-        
-        .state-dot { height: 12px; width: 12px; border-radius: 50%; display: inline-block; }
-        .dot-green { background: #50fa7b; box-shadow: 0 0 10px rgba(80, 250, 123, 0.4); }
-        .dot-blue { background: #8be9fd; animation: pulse 2s infinite; }
-        .dot-orange { background: #ffb86c; }
-        .dot-yellow { background: #f1fa8c; animation: pulse 1s infinite; }
-        .dot-red { background: #ff5555; }
-        
-        /* Action Button */
-        .btn-action { display: inline-block; background: #50fa7b; color: #1a1b1e; padding: 0.8rem 1.5rem; border-radius: 6px; text-decoration: none; font-weight: bold; transition: transform 0.2s; }
-        .btn-action:hover { transform: translateY(-2px); filter: brightness(1.1); }
-        .btn-force { background: #ffb86c; color: #444; }
-        
-        /* Tables */
-        .table-container { background: #202024; border-radius: 8px; overflow: hidden; border: 1px solid #323238; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 1rem; text-align: left; border-bottom: 1px solid #29292e; }
-        th { background: #29292e; color: #a8a8b3; font-size: 0.8rem; text-transform: uppercase; }
-        tr:last-child td { border-bottom: none; }
-        
-        /* Log Terminal */
-        .terminal { background: #0d0d0d; color: #a8a8b3; font-family: 'Consolas', monospace; padding: 1rem; border-radius: 8px; height: 300px; overflow-y: scroll; font-size: 0.85rem; line-height: 1.5; border: 1px solid #323238; }
-        
-        .alert-success { background: #50fa7b; color: #1a1b1e; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; font-weight: bold; }
-        .alert-error { background: #ff5555; color: white; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; font-weight: bold; }
-        
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #333; }
+        th { color: #888; font-size: 0.8rem; text-transform: uppercase; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+        .badge.NEW { background: #444; }
+        .badge.DOWNLOADING { background: #60a5fa; color: #1e3a8a; }
+        .badge.DOWNLOADED { background: #3b82f6; }
+        .badge.EXTRACTING { background: #f59e0b; color: #451a03; }
+        .badge.EXTRACTED { background: #d97706; }
+        .badge.IMPORTING { background: #a855f7; color: #3b0764; }
+        .badge.COMPLETED { background: var(--success); color: #052e16; }
+        .badge.ERROR { background: var(--danger); color: white; }
     </style>
+     <script>
+        function showTab(id) {
+            document.querySelectorAll('.tab-content').forEach(d => d.style.display = 'none');
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById(id).style.display = 'block';
+            document.querySelector(`[data-tab="${id}"]`).classList.add('active');
+            localStorage.setItem('activeTab', id);
+        }
+        window.onload = () => showTab(localStorage.getItem('activeTab') || 'pipeline');
+    </script>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div class="title">
-                <h1>CNPJ Control Center</h1>
-                <span>Orquestração Automática & Deploy Blue-Green</span>
-            </div>
-            <div>
-                 <span style="font-size: 0.8rem; color: #777;">Atualizado em: <?= date('H:i:s') ?></span>
-            </div>
+    <?php
+    // Conect DB
+    $pdo = new PDO("mysql:host=".getenv('DB_HOST').";port=".getenv('DB_PORT').";dbname=".getenv('DB_NAME'), getenv('DB_USER'), getenv('DB_PASSWORD'));
+    
+    // Handle Actions
+    if (isset($_GET['action'])) {
+        if ($_GET['action'] == 'swap' && file_exists(__DIR__ . '/APPROVE_SWAP')) {
+             // Force SWAP immediate
+             shell_exec("/usr/local/bin/php " . __DIR__ . "/automacao.php --stage=swap > /dev/null 2>&1 &");
+             header("Location: status.php?msg=SwapIniciado");
+             exit;
+        }
+        if ($_GET['manual_start'] == 1) {
+            // Force Discovery
+             shell_exec("/usr/local/bin/php " . __DIR__ . "/automacao.php > /dev/null 2>&1 &");
+             header("Location: status.php?msg=VerificacaoIniciada");
+             exit;
+        }
+    }
+    // Stats
+    $qStats = [];
+    $total = 0;
+    $done = 0;
+    $progress = 0;
+    $jobs = [];
+    $dbError = false;
+
+    try {
+        $qStats = $pdo->query("SELECT status, COUNT(*) as qtd FROM controle_arquivos GROUP BY status")->fetchAll(PDO::FETCH_KEY_PAIR);
+        $total = array_sum($qStats);
+        $done = $qStats['COMPLETED'] ?? 0;
+        $progress = $total > 0 ? ($done / $total) * 100 : 0;
+        
+        // Active Jobs
+        $jobs = $pdo->query("SELECT * FROM controle_arquivos WHERE status IN ('DOWNLOADING','EXTRACTING','IMPORTING') ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        $dbError = true;
+    }
+    
+    // DB Stats (Estimate)
+    $dbName = getenv('DB_NAME') . '_temp';
+    $rows = 0;
+    try {
+        $stmt = $pdo->query("SELECT SUM(TABLE_ROWS) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName'");
+        $rows = $stmt->fetchColumn() ?: 0;
+    } catch(Exception $e) {}
+    ?>
+
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+         <h1>🚀 CNPJ Pipeline Monitor</h1>
+         <div>
+             <span class="badge" style="font-size:1rem; background: #333;">DB: <?= getenv('DB_NAME') ?></span>
+             <a href="status.php?action=manual_start&manual_start=1" class="badge" style="background:#8257e5; text-decoration:none; margin-left:10px;">🔄 Force Check</a>
+         </div>
+    </div>
+    
+    <?php if($dbError): ?>
+        <div class="card" style="border-left: 4px solid var(--warning);">
+            <h3>⏳ Inicializando Sistema...</h3>
+            <p>A estrutura do banco de dados ainda não foi criada.</p>
+            <p>O robô de automação criar as tabelas automaticamente na primeira execução.</p>
+            <p><b>Aguarde 1 minuto</b> (Cron Job) ou clique em <b>Force Check</b> acima para iniciar agora.</p>
         </div>
+        <?php exit; ?>
+    <?php endif; ?>
 
-        <?php if(isset($msgSuccess)): ?> <div class="alert-success">✅ <?= $msgSuccess ?></div> <?php endif; ?>
-        <?php if(isset($msgText) && isset($msgClass) && $msgClass == 'error'): ?> <div class="alert-error">❌ <?= $msgText ?></div> <?php endif; ?>
+    <!-- KPI Cards -->
+    <div class="grid" style="margin-bottom: 30px;">
+        <div class="card">
+            <h3>Progresso Global</h3>
+            <div class="metric"><?= number_format($progress, 1) ?>%</div>
+            <div class="progress-bar">
+                <div class="progress-fill" style="width: <?= $progress ?>%; background: var(--success);"></div>
+            </div>
+            <small style="color:#888"><?= $done ?> de <?= $total ?> arquivos</small>
+        </div>
+        
+        <div class="card">
+            <h3>Registros Importados (Temp)</h3>
+            <div class="metric" style="color: var(--accent);"><?= number_format($rows, 0, ',', '.') ?></div>
+            <small>Linhas aproximadas no MySQL</small>
+        </div>
+        
+        <div class="card">
+            <h3>Fila de Erros</h3>
+            <div class="metric" style="color: var(--danger);"><?= $qStats['ERROR'] ?? 0 ?></div>
+            <small>Tentativas automáticas em andamento</small>
+        </div>
+    </div>
 
-        <!-- Main Status Cards -->
+    <!-- TABS -->
+    <div class="tabs">
+        <div class="tab" data-tab="pipeline" onclick="showTab('pipeline')">🏭 Pipeline</div>
+        <div class="tab" data-tab="jobs" onclick="showTab('jobs')">👷 Jobs Ativos</div>
+        <div class="tab" data-tab="files" onclick="showTab('files')">📁 Arquivos</div>
+    </div>
+
+    <!-- TAB: PIPELINE -->
+    <div id="pipeline" class="tab-content active">
         <div class="grid">
-            <!-- Status Card -->
-            <div class="card">
-                <h3>Estado do Sistema</h3>
-                <div class="big-stat" style="color: <?= $stateColor == 'yellow' ? '#f1fa8c' : ($stateColor == 'green' ? '#50fa7b' : 'white') ?>">
-                    <span class="state-dot dot-<?= $stateColor ?>"></span>
-                    <?= $systemState ?>
-                </div>
-                <?php if ($latest && isset($latest['approval_token']) && $latest['status'] == 'WAITING_VALIDATION'): ?>
-                     <div style="margin-top: 1rem;">
-                        <a href="approval_dashboard.php?token=<?= $latest['approval_token'] ?>" class="btn-action">
-                            🚀 APROVAR DEPLOY AGORA
-                        </a>
-                     </div>
-                <?php endif; ?>
-                
-                <?php if ($latest && ($latest['status'] == 'PENDING_APPROVAL' || $latest['status'] == 'NEW')): ?>
-                     <div style="margin-top: 1rem;">
-                        <form method="POST" onsubmit="return confirm('Tem certeza? Isso vai pular os 3 dias de espera e começar a carga pesada agora.');">
-                            <input type="hidden" name="folder" value="<?= $latest['pasta_rfb'] ?>">
-                            <button type="submit" name="action" value="force_start" class="btn-action btn-force">
-                                ⚡ FORCE START (Ignorar Prazo)
-                            </button>
-                        </form>
-                     </div>
-                <?php endif; ?>
-
-                <?php if ($latest && $latest['status'] == 'WAITING_VALIDATION'): ?>
-                    <p style="color: #a8a8b3; font-size: 0.9rem; margin-top: 10px;">
-                        O link também foi enviado para o seu e-mail.
-                    </p>
-                <?php endif; ?>
+            <div class="card" style="border-left: 4px solid var(--accent);">
+                <h3>1. Download Queue</h3> 
+                <div class="metric"><?= ($qStats['NEW'] ?? 0) + ($qStats['RETRY_DOWNLOAD'] ?? 0) ?></div>
+                <small>Aguardando Download</small>
             </div>
-
-            <!-- Last Version Card -->
-            <div class="card">
-                <h3>Versão Atual (Ref. RFB)</h3>
-                <div class="big-stat">
-                    <?= $latest ? htmlspecialchars($latest['pasta_rfb']) : 'N/A' ?>
-                </div>
-                <p style="color: #a8a8b3; font-size: 0.9rem;">
-                    Detectado em: <?= $latest ? date('d/m/Y H:i', strtotime($latest['data_detectada'])) : '-' ?>
-                </p>
+            <div class="card" style="border-left: 4px solid var(--warning);">
+                <h3>2. Extract Queue</h3>
+                <div class="metric"><?= $qStats['DOWNLOADED'] ?? 0 ?></div>
+                <small>Baixados (Prontos p/ Extrair)</small>
             </div>
-            
-            <!-- Quick Stats -->
-            <div class="card">
-                <h3>Monitoramento</h3>
-                <div style="margin-top: 10px; font-size: 0.9rem; color: #e1e1e6;">
-                    <div>• Banco de Dados: <b><?= getenv('DB_NAME') ?></b></div>
-                    <div>• Host: <b><?= getenv('DB_HOST') ?></b></div>
-                    <div>• Modo: <b>Blue-Green</b> (Seguro)</div>
-                </div>
+            <div class="card" style="border-left: 4px solid #a855f7;">
+                <h3>3. Import Queue</h3>
+                <div class="metric"><?= $qStats['EXTRACTED'] ?? 0 ?></div>
+                <small>Extraídos (Prontos p/ Importar)</small>
             </div>
         </div>
         
-        <?php
-            // CHECKLIST & IMPORT COUNTER LOGIC
-            
-            // 1. Determine Current Stage
-            $stage = 0; // 0=Idle, 1=Init, 2=Download, 3=Import, 4=Validation
-            $rowEstimate = 0;
-            
-            if ($latest) {
-                if ($latest['status'] == 'FORCE_START' || strpos($logs, 'Criando estrutura') !== false) $stage = 1;
-                if (strpos($logs, 'Iniciando Baixa') !== false || strpos($logs, 'Baixando') !== false) $stage = 2;
-                // Se detectar unzip ou carga (logs de Carga)
-                if (strpos($logs, 'Carga dos dados') !== false || strpos($logs, 'carregaDadosTabela') !== false) $stage = 3;
-                if ($latest['status'] == 'WAITING_VALIDATION') $stage = 4;
-            }
+        <div class="card" style="margin-top: 20px;">
+            <h3>ℹ️ Logs Recentes (Discovery)</h3>
+             <pre style="background:#000; padding:10px; height: 150px; overflow:auto; color: #aaa; font-size: 0.8rem;"><?= htmlspecialchars(shell_exec('tail -n 10 /tmp/cnpj_automacao.log')) ?></pre>
+        </div>
+    </div>
 
-            // 2. Get Live Row Count (Fast Approximation)
-            if ($stage >= 3) {
-                // Try to guess temp DB name from logs or convention
-                $tempDb = getenv('DB_NAME') . '_temp'; 
-                try {
-                    $stmt = $pdo->query("SELECT SUM(TABLE_ROWS) as total FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$tempDb'");
-                    $rowEstimate = $stmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0;
-                } catch(Exception $e) { /* ignore */ }
-            }
-        ?>
-
-        <!-- CHECKLIST CARD -->
-        <div class="card" style="margin-bottom: 2rem;">
-            <h3>📍 Etapas da Operação</h3>
-            <div style="display: flex; justify-content: space-between; margin-top: 15px; text-align: center;">
-                <div style="opacity: <?= $stage >= 1 ? '1' : '0.3' ?>;">
-                    <div style="font-size: 1.5rem; margin-bottom: 5px;"><?= $stage > 1 ? '✅' : ($stage==1 ? '🔄' : '⚪') ?></div>
-                    <small>Inicialização</small>
-                </div>
-                <div style="opacity: <?= $stage >= 2 ? '1' : '0.3' ?>;">
-                    <div style="font-size: 1.5rem; margin-bottom: 5px;"><?= $stage > 2 ? '✅' : ($stage==2 ? '🔄' : '⚪') ?></div>
-                    <small>Download (RFB)</small>
-                </div>
-                <div style="opacity: <?= $stage >= 3 ? '1' : '0.3' ?>;">
-                    <div style="font-size: 1.5rem; margin-bottom: 5px;"><?= $stage > 3 ? '✅' : ($stage==3 ? '🔄' : '⚪') ?></div>
-                    <small>Importação DB</small>
-                </div>
-                <div style="opacity: <?= $stage >= 4 ? '1' : '0.3' ?>;">
-                    <div style="font-size: 1.5rem; margin-bottom: 5px;"><?= $stage > 4 ? '✅' : ($stage==4 ? '✋' : '⚪') ?></div>
-                    <small>Validação</small>
-                </div>
-            </div>
-            
-            <?php if ($stage == 3): ?>
-                <div style="margin-top: 20px; background: #2a2a2a; padding: 10px; border-radius: 5px; text-align: center;">
-                    <span style="display:block; font-size: 0.8rem; color: #aaa;">REGISTROS IMPORTADOS (ESTIMATIVA)</span>
-                    <strong style="font-size: 1.8rem; color: #50fa7b;"><?= number_format($rowEstimate, 0, ',', '.') ?></strong>
-                    <span style="display:block; font-size: 0.7rem; color: #777;">Atualizado em tempo real via Information Schema</span>
-                </div>
+    <!-- TAB: JOBS -->
+    <div id="jobs" class="tab-content">
+        <div class="card">
+            <h3>Monitoramento de Workers Ativos</h3>
+            <?php if(empty($jobs)): ?>
+                <div style="padding:40px; text-align:center; color:#555;">💤 Nenhum worker trabalhando no momento. (Aguardando Cron ou Trigger)</div>
+            <?php else: ?>
+                <table>
+                    <thead><tr><th>ID</th><th>Arquivo</th><th>Fase</th><th>Status</th><th>Updated</th></tr></thead>
+                    <tbody>
+                    <?php foreach($jobs as $job): ?>
+                        <tr>
+                            <td>#<?= $job['id'] ?></td>
+                            <td><?= $job['nome_arquivo'] ?></td>
+                            <td><?= $job['status'] ?></td>
+                            <td><span class="badge <?= $job['status'] ?>"><?= $job['status'] ?></span></td>
+                            <td><?= $job['updated_at'] ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
             <?php endif; ?>
         </div>
+    </div>
 
-        <?php
-            // Parse Progress from Logs
-            $progress = 0;
-            $currentFile = "Processando...";
-            // Regex simples para pegar % do wget output
-            if (preg_match_all('/(\d+)%/', $logs, $matches)) {
-                 $progress = end($matches[1]);
-            }
-            // Tenta pegar o último arquivo mencionado
-            if (preg_match_all('/Baixando\s+([^\s]+)/', $logs, $matches)) {
-                 $currentFile = end($matches[1]);
-            }
-            
-            // Exibir apenas se parece estar rodando
-            if ($latest['status'] == 'PROCESSING' || $latest['status'] == 'FORCE_START' || strpos($logs, 'Iniciando Baixa') !== false) {
-        ?>
-            <!-- PROGRESS BAR -->
-            <div class="card" style="margin-bottom: 2rem; border: 1px solid #50fa7b;">
-                <h3 style="color: #50fa7b;">📉 Status do Download</h3>
-                <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
-                    <span>Arquivo: <b><?= htmlspecialchars($currentFile) ?></b></span>
-                    <strong><?= $progress ?>%</strong>
-                </div>
-                <div style="background: #333; height: 24px; border-radius: 12px; overflow: hidden; border: 1px solid #444;">
-                    <div style="
-                        background: linear-gradient(90deg, #50fa7b, #00ff88); 
-                        width: <?= $progress ?>%; 
-                        height: 100%; 
-                        transition: width 0.5s;
-                        box-shadow: 0 0 10px #50fa7b;
-                    "></div>
-                </div>
-            </div>
-        <?php } ?>
-
-        <!-- History Table -->
-        <h3>📜 Histórico de Versões</h3>
-        <div class="table-container">
+    <!-- TAB: FILES -->
+    <div id="files" class="tab-content">
+        <div class="card">
+            <h3>Detalhamento por Arquivo</h3>
+            <?php
+            // Safe query for table rendering
+            $allFiles = [];
+            try {
+                 $allFiles = $pdo->query("SELECT * FROM controle_arquivos ORDER BY status='ERROR' DESC, updated_at DESC LIMIT 50")->fetchAll(PDO::FETCH_ASSOC);
+            } catch(Exception $e) {}
+            ?>
             <table>
-                <thead>
-                    <tr>
-                        <th>Pasta RFB</th>
-                        <th>Status</th>
-                        <th>Detectado</th>
-                        <th>Última Mensagem</th>
-                    </tr>
-                </thead>
+                <thead><tr><th>ID</th><th>Arquivo</th><th>Tipo</th><th>Status</th><th>Erro</th></tr></thead>
                 <tbody>
-                    <?php if (empty($history)): ?>
-                        <tr><td colspan="4" style="text-align:center; padding: 2rem; color: #777;">Nenhum registro encontrado.</td></tr>
-                    <?php else: ?>
-                        <?php foreach($history as $row): ?>
-                        <tr>
-                            <td><b><?= htmlspecialchars($row['pasta_rfb']) ?></b></td>
-                            <td>
-                                <span style="
-                                    background: <?= strpos($row['status'], 'ERROR') !== false ? '#ff5555' : '#29292e' ?>;
-                                    padding: 4px 8px; border-radius: 4px; font-size: 0.8rem;
-                                    color: <?= strpos($row['status'], 'COMPLETED') !== false ? '#50fa7b' : 'white' ?>
-                                ">
-                                    <?= htmlspecialchars($row['status']) ?>
-                                </span>
-                            </td>
-                            <td><?= date('d/m/y H:i', strtotime($row['data_detectada'])) ?></td>
-                            <td style="color: #a8a8b3;"><?= htmlspecialchars(substr($row['log'] ?? '', 0, 80)) ?>...</td>
-                        </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
+                <?php foreach($allFiles as $f): ?>
+                    <tr>
+                        <td><?= $f['id'] ?></td>
+                        <td><?= $f['nome_arquivo'] ?></td>
+                        <td><?= $f['tipo'] ?></td>
+                        <td><span class="badge <?= $f['status'] ?>"><?= $f['status'] ?></span></td>
+                        <td style="color:var(--danger)"><?= substr($f['mensagem_erro'] ?? '', 0, 50) ?></td>
+                    </tr>
+                <?php endforeach; ?>
                 </tbody>
             </table>
         </div>
-
-        <!-- Terminal Logs -->
-        <h3 style="margin-top: 2rem;">💻 Terminal Log (Live Tail)</h3>
-        <div class="terminal" id="terminal">
-            <pre><?= htmlspecialchars($logs) ?></pre>
-        </div>
-        <script>
-            // Auto-scroll logs to bottom
-            const term = document.getElementById('terminal');
-            term.scrollTop = term.scrollHeight;
-        </script>
     </div>
+
 </body>
 </html>

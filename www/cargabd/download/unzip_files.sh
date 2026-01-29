@@ -27,13 +27,18 @@ extract_zips() {
             return 1
         fi
 
-        printf "Extracting %s...\n" "$(basename "$zip_file")"
-        if ! unzip -q "$zip_file" -d "$DEST_DIR"; then
-            printf "${RED}Error: Failed to extract %s${NC}\n" "$(basename "$zip_file")" >&2
+        local file_base=$(basename "$zip_file")
+        
+        # Check if already extracted (simple check based on expected CSV name or just let unzip -n handle it)
+        # unzip -n = never overwrite = resume behavior
+        
+        printf "Extracting %s (Skip if exists)...\n" "$file_base"
+        if ! unzip -n -q "$zip_file" -d "$DEST_DIR"; then
+            printf "${RED}Error: Failed to extract %s${NC}\n" "$file_base" >&2
             continue
         fi
 
-        printf "${LGREEN}Extracted %s successfully.${NC}\n" "$(basename "$zip_file")"
+        printf "${LGREEN}Processed %s successfully.${NC}\n" "$file_base"
     done
 }
 

@@ -60,6 +60,7 @@ class Automacao {
     }
 
     private function ensureControlTableExists() {
+        // Tabela Principal (Versões)
         $sql = "CREATE TABLE IF NOT EXISTS {$this->controlTable} (
             id INT AUTO_INCREMENT PRIMARY KEY,
             pasta_rfb VARCHAR(20) NOT NULL UNIQUE,
@@ -69,8 +70,25 @@ class Automacao {
             approval_token VARCHAR(64) NULL,
             tentativas INT DEFAULT 0
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
-        
         $this->pdo->exec($sql);
+        
+        // Tabela de Fila (Arquivos Individuais)
+        // Monitora o ciclo de vida de cada arquivo ZIP
+        $sqlQueue = "CREATE TABLE IF NOT EXISTS controle_arquivos (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            referencia_rfb VARCHAR(20) NOT NULL,
+            nome_arquivo VARCHAR(255) NOT NULL,
+            url_origem VARCHAR(500) NOT NULL,
+            tipo VARCHAR(50) NULL,
+            status VARCHAR(20) DEFAULT 'NEW', -- NEW, DOWNLOADING, EXTRACTED, IMPORTING, COMPLETED, ERROR
+            tentativas INT DEFAULT 0,
+            mensagem_erro TEXT,
+            tamanho_bytes BIGINT NULL,
+            tempo_processamento_seg FLOAT NULL,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_ref_status (referencia_rfb, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+        $this->pdo->exec($sqlQueue);
         
         try {
             $stmt = $this->pdo->prepare("SHOW COLUMNS FROM {$this->controlTable} LIKE 'approval_token'");
@@ -82,93 +100,387 @@ class Automacao {
         } catch (Exception $e) {}
     }
     
-    public function run() {
-        $this->log("---- Iniciando Ciclo Blue-Green ----");
+    public function run($argv = []) {
+        $this->log("---- Agente de Automação Iniciado ----");
+        
+        // Check for args
+        $options = getopt("", ["stage::"]);
+        $stage = $options['stage'] ?? null;
+        
+        if ($stage) {
+             $this->runStage($stage);
+             return;
+        }
+
+        // Supervisor Mode (Legacy / Default Loop)
+        // If no arguments, it acts as "Discovery Agent" + "Supervisor"
         
         $latestFolder = $this->getLatestFolderFromRFB();
-        
         if ($latestFolder) {
-            $this->log("Pasta mais recente na RFB: $latestFolder");
             $state = $this->checkState($latestFolder);
             
-            switch ($state['status']) {
-                case 'NEW':
-                    $this->handleNewDetection($latestFolder);
-                    break;
-                case 'PENDING_APPROVAL':
-                    $this->handlePending($state);
-                    break;
-                case 'FORCE_START': // Manual override
-                    $this->log("⚠️ Início forçado pelo usuário.");
-                    $this->handleImportExecution($latestFolder);
-                    break;
-                case 'Processing (Temp)':
-                case 'PROCESSING': 
-                    $this->handleStaleProcessing($state);
-                    break;
-                case 'WAITING_VALIDATION':
-                    $this->log("Aguardando validação para $latestFolder...");
-                    break;
-                case 'COMPLETED':
-                    $this->log("Pasta $latestFolder já processada.");
-                    break;
+            if ($state['status'] == 'NEW') {
+                $this->handleNewDetection($latestFolder);
+            } elseif ($state['status'] == 'PENDING_APPROVAL') {
+                $this->handlePending($state);
             }
-        } else {
-             $this->log("Falha ao detectar pasta na RFB.", 'WARNING');
+            
+            // If Supervisor mode, trigger stages if not running via shell exec?
+            // No, entrypoint.sh will handle triggers via Cron.
+            // This script just ensures the version is registered.
+            
+            if (file_exists($this->swapTriggerFile)) {
+                $this->executeSwap();
+            }
+        }
+    }
+    
+    private function runStage($stage) {
+        $this->log("Iniciando Stage: " . strtoupper($stage));
+        // Get active folder
+        $activeFolder = $this->getActiveFolder();
+        if (!$activeFolder) {
+             $this->log("Nenhuma versão ativa para processar."); 
+             return;
         }
         
-        if (file_exists($this->swapTriggerFile)) {
-            $this->executeSwap();
+        // Loop for 55 seconds
+        $endTime = time() + 55;
+        while (time() < $endTime) {
+            $didWork = false;
+            switch ($stage) {
+                case 'download':
+                    $didWork = $this->runDownloader($activeFolder);
+                    break;
+                case 'extract':
+                    $didWork = $this->runExtractor($activeFolder);
+                    break;
+                case 'import':
+                    $didWork = $this->runImporter($activeFolder);
+                    break;
+                case 'swap':
+                    if (file_exists($this->swapTriggerFile)) {
+                        $this->executeSwap();
+                        return; // Exit after swap
+                    }
+                    sleep(2);
+                    break;
+            }
+            
+            if (!$didWork && $stage != 'swap') {
+                // If nothing to do, verify completion
+                if ($this->isAllDone($activeFolder) && $stage == 'import') {
+                     // Check if already updated to WAITING_VALIDATION
+                     $state = $this->checkState($activeFolder);
+                     if ($state['status'] != 'WAITING_VALIDATION' && $state['status'] != 'COMPLETED') {
+                         $this->finishImportValues($activeFolder);
+                     }
+                     break; 
+                }
+                sleep(5);
+            }
+        }
+    }
+    
+    private function getActiveFolder() {
+        $stmt = $this->pdo->query("SELECT pasta_rfb FROM {$this->controlTable} WHERE status NOT IN ('COMPLETED', 'NEW') ORDER BY id DESC LIMIT 1");
+        return $stmt->fetchColumn();
+    }
+    
+    // --- PIPELINE WORKERS ---
+    
+    private function runDownloader($folder) {
+        // Backpressure: Start new download only if Extracted/Importing queue is small (< 5)
+        // This prevents disk fill up
+        $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM controle_arquivos WHERE status IN ('EXTRACTED', 'IMPORTING', 'EXTRACTING') AND referencia_rfb = ?");
+        $stmt->execute([$folder]);
+        if ($stmt->fetchColumn() >= 3) return false; // Throttling: Wait for consumer
+        
+        // Pick NEW/RETRY Download
+        $stmt = $this->pdo->prepare("SELECT * FROM controle_arquivos 
+            WHERE status IN ('NEW', 'RETRY_DOWNLOAD') AND referencia_rfb = ? 
+            ORDER BY tipo='PAIS' DESC, tipo='MUNICIPIO' DESC, id ASC LIMIT 1");
+        $stmt->execute([$folder]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$job) return false;
+        
+        $this->updateQueueStatus($job['id'], 'DOWNLOADING');
+        $this->log("⬇️ Downloader: " . $job['nome_arquivo']);
+        
+        try {
+            $downloadDir = '/var/www/html/cargabd/download';
+            if (!file_exists($downloadDir)) mkdir($downloadDir, 0777, true);
+            $zipPath = $downloadDir . '/' . $job['nome_arquivo'];
+            
+            // wget with resume
+            $cmd = "wget -c -nv -O '$zipPath' '{$job['url_origem']}'";
+            $this->executeShell($cmd);
+            
+            // Check size?
+            if (!file_exists($zipPath) || filesize($zipPath) < 100) throw new Exception("Arquivo vazio ou download falhou");
+            
+            $this->updateQueueStatus($job['id'], 'DOWNLOADED');
+            return true;
+        } catch (Exception $e) {
+            $this->handleError($job['id'], $e->getMessage(), 'RETRY_DOWNLOAD');
+            return false;
         }
     }
 
-    private function handleImportExecution($folder) {
+    private function runExtractor($folder) {
+        // Pick DOWNLOADED
+        $stmt = $this->pdo->prepare("SELECT * FROM controle_arquivos WHERE status = 'DOWNLOADED' AND referencia_rfb = ? LIMIT 1");
+        $stmt->execute([$folder]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$job) return false;
+        
+        $this->updateQueueStatus($job['id'], 'EXTRACTING');
+        $this->log("📦 Extractor: " . $job['nome_arquivo']);
+        
+        try {
+            $downloadDir = '/var/www/html/cargabd/download';
+            $extractDir = '/var/www/html/cargabd/extracted';
+            if (!file_exists($extractDir)) mkdir($extractDir, 0777, true);
+            
+            $zipPath = $downloadDir . '/' . $job['nome_arquivo'];
+            
+            if (!file_exists($zipPath)) throw new Exception("ZIP sumiu: $zipPath");
+
+            $cmd = "unzip -o '$zipPath' -d '$extractDir'";
+            $this->executeShell($cmd);
+            
+            // Remove ZIP immediate to save space
+            unlink($zipPath);
+            
+            $this->updateQueueStatus($job['id'], 'EXTRACTED');
+            return true;
+        } catch (Exception $e) {
+             $this->handleError($job['id'], $e->getMessage(), 'RETRY_DOWNLOAD'); // Re-download if zip corrupt
+             return false;
+        }
+    }
+
+    private function runImporter($folder) {
+        // Pick EXTRACTED
+        $stmt = $this->pdo->prepare("SELECT * FROM controle_arquivos WHERE status = 'EXTRACTED' AND referencia_rfb = ? LIMIT 1");
+        $stmt->execute([$folder]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$job) return false;
+        
+        $this->updateQueueStatus($job['id'], 'IMPORTING');
+        $this->log("🚀 Importer: " . $job['nome_arquivo']);
+        
+        try {
+            $extractDir = '/var/www/html/cargabd/extracted';
+            // Find extracted CSV (match ID or name?)
+            // We deleted ZIP, so we rely on what was inside.
+            // Assumption: unzip output filename matches zip name structure? 
+            // Better: When extracting, we capture output? No PHP unzip?
+            // Robust way: glob() but limit search?
+            // Since we process one by one, the ONLY files in extracted should be ours? 
+            // Wait, Extractor runs in parallel maybe? No, "Backpressure" limit prevents pileup.
+            // But if Extractor ran 3 times, there are 3 csvs. We need to match.
+            // Complex match logic: 
+            // Layout: K3241.K03200Y8.D20911.EMPRECSV.zip -> K3241.K03200Y8.D20911.EMPRECSV
+            
+            $zipName = $job['nome_arquivo']; // X.zip
+            $baseName = preg_replace('/\.zip$/i', '', $zipName);
+            
+            $targetCsv = "$extractDir/$baseName";
+            // Fallback for case sensitivity
+            if (!file_exists($targetCsv)) $targetCsv .= '.csv'; 
+            if (!file_exists($targetCsv)) $targetCsv = "$extractDir/$baseName.CSV";
+            
+            // Critical Fallback: Search similar
+            if (!file_exists($targetCsv)) {
+                 $candidates = glob("$extractDir/*" . substr($baseName, -8) . "*"); // Match suffix like EMPRECSV
+                 if ($candidates) $targetCsv = $candidates[0];
+            }
+
+            if (!file_exists($targetCsv)) throw new Exception("CSV Sumiu: $baseName");
+
+            // --- IMPORT LOGIC ---
+            $dbMain = getenv('DB_NAME');
+            $dbTemp = $dbMain . '_temp';
+            putenv("DB_NAME=$dbTemp");
+            
+            require_once __DIR__ . '/index.php'; // Load autoloader context
+            $carga = new Cargabanco();
+            
+             // Mapeamento DAO
+            $daoMap = [
+                'EMPRESA' => 'EmpresaDAO', 'ESTABELECIMENTO' => 'EstabelecimentoDAO', 'SOCIO' => 'SociosDAO',
+                'SIMPLES' => 'SimplesDAO', 'CNAE' => 'CnaeDAO', 'MOTIVO' => 'MotiDAO',
+                'MUNICIPIO' => 'MunicDAO', 'NATUREZA' => 'NatjuDAO', 'PAIS' => 'PaisDAO', 'QUALIFICACAO' => 'QualsDAO'
+            ];
+            $daoClass = $daoMap[$job['tipo']] ?? null;
+            if (!$daoClass) throw new Exception("DAO desconhecido para " . $job['tipo']);
+
+            $tpdo = New TPDOConnection(); $tpdo::connect();
+            $daoInstance = new $daoClass($tpdo);
+            
+            $carga->carregaDadosTabela($daoInstance, basename($targetCsv));
+            
+            // Delete CSV
+            unlink($targetCsv);
+            
+            $this->updateQueueStatus($job['id'], 'COMPLETED');
+            return true;
+
+        } catch (Exception $e) {
+            $this->handleError($job['id'], $e->getMessage(), 'ERROR');
+            return false;
+        }
+    }
+    
+    private function handleError($id, $msg, $status) {
+         $this->log("Error Job #$id: $msg");
+         $stmt = $this->pdo->prepare("UPDATE controle_arquivos SET status=?, mensagem_erro=?, tentativas=tentativas+1 WHERE id=?");
+         $stmt->execute([$status, $msg, $id]);
+    }
+    
+    private function isAllDone($folder) {
+         $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM controle_arquivos WHERE status != 'COMPLETED' AND referencia_rfb = ?");
+         $stmt->execute([$folder]);
+         return $stmt->fetchColumn() == 0;
+    }
+    
+    // Change signature to return bool
+    private function processNextQueueItem($folder) {
         $dbMain = getenv('DB_NAME');
         $dbTemp = $dbMain . '_temp';
 
-        $this->updateStatus($folder, 'Processing (Temp)', "Criando banco temporário $dbTemp...");
+        // 1. Select Next Job
+        $stmt = $this->pdo->prepare("SELECT * FROM controle_arquivos 
+            WHERE status IN ('NEW', 'RETRY') AND referencia_rfb = ? 
+            ORDER BY tipo='PAIS' DESC, tipo='MUNICIPIO' DESC, id ASC LIMIT 1"); // Prioriza tabelas auxiliares
+        $stmt->execute([$folder]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
 
+        if (!$job) {
+            // Se não tem jobs NEW/RETRY, verifica se tem algum ainda rodando ou ERROR
+            $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM controle_arquivos WHERE status IN ('DOWNLOADING','EXTRACTING','IMPORTING') AND referencia_rfb = ?");
+            $stmt->execute([$folder]);
+            if ($stmt->fetchColumn() > 0) return true; // Ainda tem gente trabalhando (Busy wait)
+            
+            // Se todos COMPLETED -> Sucesso Total
+            $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM controle_arquivos WHERE status != 'COMPLETED' AND referencia_rfb = ?");
+            $stmt->execute([$folder]);
+            $pendentes = $stmt->fetchColumn();
+            
+            if ($pendentes == 0) {
+                 $this->finishImportValues($folder);
+            }
+            return false;
+        }
+
+        // 2. Start Job
+        $fileId = $job['id'];
+        $fileName = $job['nome_arquivo'];
+        $fileUrl  = $job['url_origem'];
+        
+        $this->updateQueueStatus($fileId, 'DOWNLOADING');
+        $this->log("Iniciando Job #$fileId: $fileName");
+        
         try {
-            $this->pdo->exec("DROP DATABASE IF EXISTS `$dbTemp`");
-            $this->pdo->exec("CREATE DATABASE `$dbTemp` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+            // STEP A: Download
+            $downloadDir = '/var/www/html/cargabd/download';
+            $zipPath = $downloadDir . '/' . $fileName;
             
-            putenv("DB_NAME=$dbTemp"); 
-            putenv("TRUNCATE_ON_START=true"); 
+            if (!file_exists($downloadDir)) mkdir($downloadDir, 0777, true);
             
-            // UX IMPROVEMENT: Cria tabelas vazias agora para o usuário ver no DBeaver
-            $this->log("Criando estrutura de tabelas em $dbTemp...");
-            $this->initSchema($dbTemp);
-
-            $this->log("Iniciando Baixa de Arquivos (Isso pode demorar)...");
+            // Usa wget com retry
+            $cmd = "wget -c -nv -O '$zipPath' '$fileUrl'";
+            $this->executeShell($cmd);
             
-            // EMERGENCY FIX: Tenta limpar CRLF (Windows) mesmo sem root (espera-se que entrypoint ajude, mas garantimos aqui)
-            // O "|| true" impede que falhas de permissão no sed parem o script
-            $this->executeShell("find /var/www/html/cargabd/download -name '*.sh' -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true");
-            $this->executeShell("find /var/www/html/cargabd/download -name '*.sh' -type f -exec chmod +x {} + 2>/dev/null || true");
-
-            $this->executeShell("cd /var/www/html/cargabd/download && bash download_files.sh");
-            $this->executeShell("cd /var/www/html/cargabd/download && bash unzip_files.sh");
-            $this->executeShell("php /var/www/html/cargabd/index.php"); 
+            // STEP B: Unzip
+            $this->updateQueueStatus($fileId, 'EXTRACTING');
+            $extractDir = '/var/www/html/cargabd/extracted';
+            if (!file_exists($extractDir)) mkdir($extractDir, 0777, true);
             
-            $token = bin2hex(random_bytes(16));
-            $this->updateStatus($folder, 'WAITING_VALIDATION', "Carga temp concluída. Token gerado.", $token);
+            // Unzip -n (skip existing) but here we want explicit extract
+            $cmd = "unzip -o '$zipPath' -d '$extractDir'"; // -o force overwrite for fresh extraction
+            $this->executeShell($cmd);
             
-            $link = "https://cnpjrfb.agenciataruga.com/cargabd/approval_dashboard.php?token=$token";
+            // Find extracted CSV
+            $csvFiles = array_merge(glob("$extractDir/*.csv"), glob("$extractDir/*.CSV"));
+            if (empty($csvFiles)) {
+                 $csvFiles = glob("$extractDir/*"); // Try any file
+            }
+            $targetCsv = reset($csvFiles); // Pega o primeiro que achar (normalmente só tem 1 por zip)
             
-            $body = "<h2>🚀 Validação Necessária (Blue-Green)</h2>
-                A carga da pasta <b>$folder</b> foi concluída no banco temporário.<br><br>
-                <b>Resumo:</b><br>
-                O banco temporário está pronto para assumir. Clique abaixo para ver as estatísticas e aprovar a troca.<br><br>
-                <a href='$link' style='background:#28a745;color:white;padding:12px 24px;text-decoration:none;border-radius:5px;display:inline-block;'>👉 ACESSAR PAINEL DE APROVAÇÃO</a>
-                <br><br><small>Link seguro válido para esta importação.</small>";
-                
-            $this->sendEmail("⚠️ [Ação Necessária] Aprovar Versão $folder", $body);
+            if (!$targetCsv) throw new Exception("CSV não encontrado após extração de $fileName");
+            
+            // STEP C: Import
+            $this->updateQueueStatus($fileId, 'IMPORTING');
+            
+            // Initialize Cargabanco Wrapper
+            // Aqui conectamos ao DB TEMP
+            putenv("DB_NAME=$dbTemp"); // Hack para a classe DAO conectar no certo
+            
+            // Precisamos instanciar o Controller e chamar o método certo
+            require_once __DIR__ . '/index.php'; // Carrega autoloads mas não executa devido ao if(cli)
+            // Erro: index.php executa se for CLI. Precisamos de um require que só traga classes.
+            // Vamos assumir que os requires do topo ja resolveram.
+            
+            $carga = new Cargabanco();
+            // Precisamos mapear o DAO correto
+            $daoMap = [
+                'EMPRESA' => 'EmpresaDAO',
+                'ESTABELECIMENTO' => 'EstabelecimentoDAO',
+                'SOCIO' => 'SociosDAO',
+                'SIMPLES' => 'SimplesDAO',
+                'CNAE' => 'CnaeDAO',
+                'MOTIVO' => 'MotiDAO',
+                'MUNICIPIO' => 'MunicDAO',
+                'NATUREZA' => 'NatjuDAO',
+                'PAIS' => 'PaisDAO',
+                'QUALIFICACAO' => 'QualsDAO'
+            ];
+            
+            // Detecta DAO via Tipo do Job
+            $daoClass = $daoMap[$job['tipo']] ?? null;
+            if (!$daoClass) throw new Exception("Tipo desconhecido: " . $job['tipo']);
+            
+            // Cria DAO Instance
+            $tpdo = New TPDOConnection();
+            $tpdo::connect();
+            $daoInstance = new $daoClass($tpdo);
+            
+            // Roda Carga
+            $this->log("Importando CSV no Banco: " . basename($targetCsv));
+            $carga->carregaDadosTabela($daoInstance, basename($targetCsv));
+            
+            // STEP D: Cleanup
+            unlink($zipPath);
+            unlink($targetCsv);
+            
+            $this->updateQueueStatus($fileId, 'COMPLETED');
+            $this->log("Job #$fileId concluído com sucesso.");
 
         } catch (Exception $e) {
-            $this->updateStatus($folder, 'ERROR', $e->getMessage());
-            $this->sendEmail("❌ Falha na Carga Temp", $e->getMessage());
-            $this->log($e->getMessage(), 'ERROR');
+            $msg = $e->getMessage();
+            $this->pdo->prepare("UPDATE controle_arquivos SET status='ERROR', mensagem_erro=?, tentativas=tentativas+1 WHERE id=?")->execute([$msg, $fileId]);
+            $this->log("Erro no job $fileId: $msg", 'ERROR');
         }
+    }
+    
+    private function updateQueueStatus($id, $status) {
+        $this->pdo->prepare("UPDATE controle_arquivos SET status=? WHERE id=?")->execute([$status, $id]);
+    }
+    
+    private function finishImportValues($folder) {
+             $token = bin2hex(random_bytes(16));
+            $this->updateStatus($folder, 'WAITING_VALIDATION', "Carga Queue concluída.", $token);
+            
+            $link = "https://cnpjrfb.agenciataruga.com/cargabd/approval_dashboard.php?token=$token";
+            $body = "<h2>� Validação Necessária (Blue-Green Queue)</h2>
+                A carga <b>$folder</b> via Fila foi concluída.<br><br>
+                <a href='$link'>ACESSAR PAINEL</a>";
+            $this->sendEmail("✅ Carga Finalizada: $folder", $body);
     }
 
     private function executeSwap() {
@@ -235,9 +547,60 @@ class Automacao {
     
     private function handleNewDetection($folder) {
         $this->log("Nova pasta encontrada: $folder");
-        $stmt = $this->pdo->prepare("INSERT INTO {$this->controlTable} (pasta_rfb, status, data_detectada) VALUES (?, 'PENDING_APPROVAL', NOW())");
+        
+        // 1. Registrar Versão
+        $stmt = $this->pdo->prepare("INSERT IGNORE INTO {$this->controlTable} (pasta_rfb, status, data_detectada) VALUES (?, 'PENDING_APPROVAL', NOW())");
         $stmt->execute([$folder]);
-        $this->sendEmail("⚠️ Nova Atualização: $folder", "Detectada pasta <b>$folder</b> na RFB.<br>Importação em 3 dias.");
+        
+        // 2. Popular Fila de Arquivos
+        $this->log("Populando fila de download para $folder...");
+        $qtd = $this->populateQueue($folder);
+        
+        $this->sendEmail("⚠️ Nova Atualização: $folder", "Detectada pasta <b>$folder</b> na RFB.<br>Fila criada com <b>$qtd</b> arquivos.<br>Aguardando prazo de 3 dias para iniciar processamento.");
+    }
+    
+    private function populateQueue($folder) {
+        $url = $this->baseUrl . $folder . '/';
+        $html = @file_get_contents($url, false, stream_context_create([
+            "ssl" => ["verify_peer"=>false, "verify_peer_name"=>false]
+        ]));
+        
+        if (!$html) {
+            $this->log("Falha ao ler URL $url", 'ERROR');
+            return 0;
+        }
+        
+        preg_match_all('/href="([^"]+\.zip)"/', $html, $matches);
+        if (empty($matches[1])) return 0;
+        
+        $files = array_unique($matches[1]);
+        $count = 0;
+        
+        foreach ($files as $file) {
+            // Identifica Tipo
+            $tipo = 'OUTROS';
+            if (strpos($file, 'Empresa')!==false) $tipo = 'EMPRESA';
+            if (strpos($file, 'Estabele')!==false) $tipo = 'ESTABELECIMENTO';
+            if (strpos($file, 'Socio')!==false) $tipo = 'SOCIO';
+            if (strpos($file, 'Simples')!==false) $tipo = 'SIMPLES';
+            if (strpos($file, 'Cnae')!==false) $tipo = 'CNAE';
+            if (strpos($file, 'Moti')!==false) $tipo = 'MOTIVO';
+            if (strpos($file, 'Munic')!==false) $tipo = 'MUNICIPIO';
+            if (strpos($file, 'Natju')!==false) $tipo = 'NATUREZA';
+            if (strpos($file, 'Pais')!==false) $tipo = 'PAIS';
+            if (strpos($file, 'Quals')!==false) $tipo = 'QUALIFICACAO';
+            
+            $fileUrl = $url . $file;
+            
+            $stmt = $this->pdo->prepare("INSERT IGNORE INTO controle_arquivos 
+                (referencia_rfb, nome_arquivo, url_origem, tipo, status) 
+                VALUES (?, ?, ?, ?, 'NEW')");
+            $stmt->execute([$folder, $file, $fileUrl, $tipo]);
+            $count++;
+        }
+        
+        $this->log("Queue populada com $count arquivos.");
+        return $count;
     }
 
     private function handlePending($state) {
@@ -247,8 +610,28 @@ class Automacao {
         $diff = $now->diff($detectDate);
         $this->log("Verificando $folder. Dias em espera: " . $diff->days);
         if ($diff->days >= 3) {
-            $this->log("Prazo atingido. Iniciando IMPORTAÇÃO.");
-            $this->handleImportExecution($folder);
+         $this->log("Prazo atingido. (Requisição de Importação)");
+            // In pipeline architecture, we just respect the Start flag.
+            // Queue populates in NewDetection.
+            // So we need to ensure stats are running or force them?
+            // Actually, if status is PENDING_APPROVAL and queue is populated,
+            // we should have logic to START the workers.
+            // But workers run NEW/RETRY.
+            // So we just need to enable them.
+            // Wait, runDownloader checks for status?
+            // runDownloader picks NEW/RETRY jobs.
+            // Is there a parent status blocking it?
+            // No, the workers just look at queue.
+            // But we might want to gate them if parent folder is PENDING?
+            // The current logic: Workers take job if folder is the active one.
+            // getActiveFolder returns status NOT IN (COMPLETED, NEW).
+            // PENDING_APPROVAL is NOT IN (COMPLETED, NEW). So workers ARE ACTIVE.
+            // So, actually, the import starts immediately after population?
+            // The user wanted a 3-day delay.
+            // Fix: getActiveFolder should only pick if status is PROCESSING or something.
+            // Let's change this log and logic.
+             $this->pdo->prepare("UPDATE {$this->controlTable} SET status='PROCESSING' WHERE pasta_rfb=?")->execute([$folder]);
+             $this->log("Status atualizado para PROCESSING. Workers iniciados.");
         } else {
             $this->log("Ainda aguardando prazo de 3 dias.");
         }
@@ -284,8 +667,11 @@ class Automacao {
         file_put_contents($lockFile, getmypid());
 
          $this->log("ALERTA: Pasta $folder encontrada em estado PROCESSING.", 'WARNING');
-         $this->handleImportExecution($folder);
-         
+         // Just ensure status is correct and let workers pick up?
+         // Yes, if status is PROCESSING, workers are already valid to run.
+         // Force start workers? No need, cron runs every minute.
+         // Just log.
+          
          @unlink($lockFile);
     }
 

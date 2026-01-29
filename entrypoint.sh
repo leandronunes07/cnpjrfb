@@ -27,13 +27,26 @@ if [ -d "/var/www/html/cargabd/download" ]; then
 fi
 
 # 4. Iniciar o Cron em background
-# 4. Configurar Cron (Explicito para root)
-echo "Setting up root crontab..."
-echo "0 2 * * * /usr/local/bin/php /var/www/html/cargabd/automacao.php >> /var/log/cron.log 2>&1" | crontab -
+# 4. Configurar Cron (Pipeline Stage) - Roda a cada minuto para manter Workers ativos
+echo "Setting up pipeline crons..."
+# Limpa crons anteriores
+crontab -r || true
 
-# 5. Criar arquivo de log do Cron
-touch /var/log/cron.log
-chmod 666 /var/log/cron.log
+# Cria arquivo temporário de cron
+cat <<EOF > /tmp/cron_jobs
+* * * * * /usr/local/bin/php /var/www/html/cargabd/automacao.php --stage=download >> /var/log/cron_download.log 2>&1
+* * * * * /usr/local/bin/php /var/www/html/cargabd/automacao.php --stage=extract >> /var/log/cron_extract.log 2>&1
+* * * * * /usr/local/bin/php /var/www/html/cargabd/automacao.php --stage=import >> /var/log/cron_import.log 2>&1
+0 */4 * * * /usr/local/bin/php /var/www/html/cargabd/automacao.php >> /var/log/cron_discovery.log 2>&1
+EOF
+
+# Aplica
+crontab /tmp/cron_jobs
+rm /tmp/cron_jobs
+
+# 5. Criar logs
+touch /var/log/cron_download.log /var/log/cron_extract.log /var/log/cron_import.log /var/log/cron_discovery.log
+chmod 666 /var/log/cron_*.log
 
 # 6. Iniciar serviços
 service cron start
