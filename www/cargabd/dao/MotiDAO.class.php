@@ -19,7 +19,7 @@ class MotiDAO  extends Dao
     public function __construct($tpdo=null)
     {
         parent::__construct($tpdo);
-        $this->setTabelaName('dados_rfb.moti');
+        $this->setTabelaName('moti');
     }
     //--------------------------------------------------------------------------------
     public function insert( array $linhaArquivoCsv )

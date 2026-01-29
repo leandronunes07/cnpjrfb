@@ -70,11 +70,25 @@ Agora vem parte demorada !
 
 
 
-## Intalação via Docker-compose - NÃO ESTÁ COMPLETO
-Existem alguns arquivos em Docker-compose para criar todo o ambiente necessários para rodar tudo que é necessário. A ideia é com um comando o usuário consiga ter tudo funcionando sem muito esforço.
+## Instalação via Portainer / Docker Compose (Recomendado)
 
-1. Instale o Docker e Docker-compose 
-1. Abriu um terminal na raiz do projeto
-1. Execute o comando `docker-compose build` para gerar todo o ambiente.
-1. Execute o comando `docker-compose -f docker-compose.yml up -d` para rodar o ambiente já configurado. O Docker pretender resolver apenas [Parte 1 - PHP](#parte-1---php)
-1. Verificando se a instalação está correta: Abra o sistema em um navegador e verifique se os 3 menus dentre home está funcionando: Empresa, Sócios e CNEA.
+O projeto agora conta com uma stack otimizada para o Portainer, incluindo configurações de performance para PHP e MariaDB.
+
+1.  Certifique-se de ter o Docker e Docker Compose instalados.
+2.  Para rodar via terminal:
+    ```bash
+    docker-compose -f portainer-stack.yml up -d
+    ```
+3.  Para rodar no Portainer:
+    -   Crie uma nova Stack.
+    -   Cole o conteúdo de `portainer-stack.yml`.
+    -   Faça o upload do arquivo `php-custom.ini` se necessário, ou garanta que ele esteja no volume correto.
+4.  Acesse:
+    -   Aplicação: `http://localhost:8081`
+    -   Adminer: `http://localhost:8082`
+    -   PHPMyAdmin: `http://localhost:8083`
+
+### Melhorias Recentemente Implementadas
+-   **Importação Otimizada**: O script de importação agora usa transações em lote, aumentando significativamente a velocidade de carga.
+-   **Configuração PHP Dinâmica**: Arquivo `php-custom.ini` incluso para ajustar limites de memória e tempo de execução.
+-   **Stack Completa**: Inclui Adminer e PHPMyAdmin para facilitar a gestão do banco.

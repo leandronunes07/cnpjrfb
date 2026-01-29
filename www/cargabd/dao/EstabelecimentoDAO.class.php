@@ -46,7 +46,7 @@ class EstabelecimentoDAO  extends Dao
     public function __construct($tpdo=null)
     {
         parent::__construct($tpdo);
-        $this->setTabelaName('dados_rfb.estabelecimento');
+        $this->setTabelaName('estabelecimento');
     }
     //--------------------------------------------------------------------------------
     public function selectCount()

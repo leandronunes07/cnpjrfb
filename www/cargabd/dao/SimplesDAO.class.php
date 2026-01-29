@@ -23,7 +23,7 @@ class SimplesDAO  extends Dao
     public function __construct($tpdo=null)
     {
         parent::__construct($tpdo);
-        $this->setTabelaName('dados_rfb.simples');
+        $this->setTabelaName('simples');
     }
     //--------------------------------------------------------------------------------
     public function selectCount()

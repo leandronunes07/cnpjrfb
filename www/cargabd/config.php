@@ -8,10 +8,10 @@
  */
 return [
      'db_drive' => 'mysql'
-    ,'db_host' => '127.0.0.1'
+    ,'db_host' => 'my_mysql8' // Endereço do Servidor MySQL externo
     ,'db_port' => '3306'
-    ,'db_name' => 'mybb'
-    ,'db_user' => 'mybb'
-    ,'db_password' => 'mybb'
-    ,'EXTRACTED_FILES_PATH'=>'/var/opt/dados_receita/extracted_files'
+    ,'db_name' => 'cnpjrfb_2026'
+    ,'db_user' => 'root' // ATENÇÃO: Verifique a senha
+    ,'db_password' => '123456' // ATENÇÃO: Verifique a senha
+    ,'EXTRACTED_FILES_PATH'=>'/var/www/html/cargabd/extracted'
 ];

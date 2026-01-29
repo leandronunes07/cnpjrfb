@@ -14,12 +14,12 @@
 //Veja como configurar conforme o Banco de Dados
 //https://www.adianti.com.br/framework-quickstart
 return [
-     "host" => ""
-    ,"port" => ""
-    ,"name" => "app/database/cnpjrfb.db"
-    ,"user" => ""
-    ,"pass" => ""
-    ,"type" => "sqlite"
+     "host" => "my_mysql8"
+    ,"port" => "3306"
+    ,"name" => "cnpjrfb_2026"
+    ,"user" => "root"
+    ,"pass" => "123456" // ATENÇÃO: Verifique a senha
+    ,"type" => "mysql"
     ,"prep" => "1"
     ,"slog" => "SystemSqlLogService"
 ];

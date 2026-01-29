@@ -76,6 +76,18 @@ class TPDOConnection {
         }        
         return true;
     }
+
+    public static function beginTransaction() {
+        return self::getInstance()->beginTransaction();
+    }
+
+    public static function commit() {
+        return self::getInstance()->commit();
+    }
+
+    public static function rollBack() {
+        return self::getInstance()->rollBack();
+    }
     /**
      * Define DSN (Data source name) for connection.
      * return implicit, in attributes of class: Host, Database Name and port.

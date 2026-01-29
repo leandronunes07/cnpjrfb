@@ -19,7 +19,7 @@ class QualsDAO  extends Dao
     public function __construct($tpdo=null)
     {
         parent::__construct($tpdo);
-        $this->setTabelaName('dados_rfb.quals');
+        $this->setTabelaName('quals');
     }
     //--------------------------------------------------------------------------------
     public function insert( array $linhaArquivoCsv )

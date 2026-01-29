@@ -23,7 +23,7 @@ class EmpresaDAO  extends Dao
     public function __construct($tpdo=null)
     {
         parent::__construct($tpdo);
-        $this->setTabelaName('dados_rfb.empresa');
+        $this->setTabelaName('empresa');
     }
     //--------------------------------------------------------------------------------
     public function selectCount()

@@ -27,7 +27,7 @@ class SociosDAO  extends Dao
     public function __construct($tpdo=null)
     {
         parent::__construct($tpdo);
-        $this->setTabelaName('dados_rfb.socios');
+        $this->setTabelaName('socios');
     }
     //--------------------------------------------------------------------------------
     public function selectCount()
