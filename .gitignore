@@ -14,6 +14,9 @@
 # Iginorando arquivos de log
 /log_apache/
 
+#Iginorando arquivos do projeto
+/www/extractor-cnpjrfb/vendor/
+
 #Iginorando arquivos da receita federal
 !/www/cargabd/download/unzip_files.sh
 !/www/cargabd/download/download_files.sh
